@@ -1,0 +1,16 @@
+# 저작물 전문(全文) — 공개 저장소 제외
+# 책 전문
+지적 대화를 위한 넓고 얕은 지식 1 - 채사장.md
+시민의 교양-채사장.md
+'지대넓얕' 채사장이 알려주는 고전 *.txt
+# 팟캐스트 자막 원본
+podcast/
+# 전체 전처리 파생물(책·자막 재구성 전문)
+analysis/cleaned_*.txt
+analysis/podcast_clean/
+# 타 매체 전문 사본
+sources/channelyes_2016_interview_30155.md
+sources/kci_2026_llm_translation.pdf
+sources/kci_2026_llm_translation.txt
+__pycache__/
+desktop.ini

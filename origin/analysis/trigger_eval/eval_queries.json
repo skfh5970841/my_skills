@@ -1,0 +1,26 @@
+{
+  "_readme": "chaesajang-style 스킬 description 트리거 평가 세트. optimizing-descriptions 방법론(agentskills.io) 준수: should-trigger 9 + near-miss negative 11 = 20개. 각 질의를 3회 실행해 trigger rate 측정. threshold 0.5.",
+  "queries": [
+    { "id": 1, "query": "채사장 스타일로 '왜 사람들은 보험을 안 들까'라는 주제로 에세이 좀 써줘", "should_trigger": true },
+    { "id": 2, "query": "아래 글 지대넓얕 느낌으로 바꿔줘:\n인플레이션은 통화 공급량이 증가하여 화폐 가치가 하락하고 물가가 지속적으로 상승하는 경제 현상을 말한다.", "should_trigger": true },
+    { "id": 3, "query": "복리 효과를 쉽고 깊게 설명해줘. 어려운 용어 없이.", "should_trigger": true },
+    { "id": 4, "query": "제가 쓴 이 서평을 교양서 느낌 나는 문체로 다듬어주세요", "should_trigger": true },
+    { "id": 5, "query": "'자유'라는 철학 개념을 일상어 에세이로 풀어서 써줘", "should_trigger": true },
+    { "id": 6, "query": "백과사전식 설명을 읽기 좋은 칼럼체로 바꿔줘", "should_trigger": true },
+    { "id": 7, "query": "유튜브 지식 채널 대본처럼 '고대 로마 물가' 이야기를 써줘", "should_trigger": true },
+    { "id": 8, "query": "블로그에 올릴 글인데, 개념 설명이 들어간 지적인 에세이 톤으로 써줘. 주제는 미시경제학의 수요 법칙이야.", "should_trigger": true },
+    { "id": 9, "query": "채사장이 쓰면 어떤 느낌일지 '노동의 미래'로 짧게 써봐줘", "should_trigger": true },
+
+    { "id": 10, "query": "이 주제로 글 구조만 잡아줘. 개요랑 목차 먼저 봐야 해.", "should_trigger": false },
+    { "id": 11, "query": "'도시와 낙원' 주제로 브레인스토밍 해줘. 어떤 각도가 가능할까?", "should_trigger": false },
+    { "id": 12, "query": "이 내용을 사내 보고서 형식으로 정리해줘. 요약, 배경, 제언 순으로.", "should_trigger": false },
+    { "id": 13, "query": "이 파이썬 함수 리팩토링해줘", "should_trigger": false },
+    { "id": 14, "query": "다음 영어 문단 한국어로 번역해줘", "should_trigger": false },
+    { "id": 15, "query": "논문 초록 200자로 요약해줘", "should_trigger": false },
+    { "id": 16, "query": "첫눈에 반한 밤하늘 같은 시 한 편 써줘", "should_trigger": false },
+    { "id": 17, "query": "고객에게 보낼 사과 이메일 초안 써줘", "should_trigger": false },
+    { "id": 18, "query": "유튜브 썸네일에 넣을 문구 5개 추천해줘", "should_trigger": false },
+    { "id": 19, "query": "아래 글에서 맞춤법이랑 띄어쓰기만 고쳐줘", "should_trigger": false },
+    { "id": 20, "query": "인스타그램 광고용 카피 문구 만들어줘", "should_trigger": false }
+  ]
+}
