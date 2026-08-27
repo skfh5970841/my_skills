@@ -1,7 +1,6 @@
 ---
 name: chaesajang-advisor
-description: 채사장 스타일로 생각하고, 구조를 잡고, 글을 쓰는 페르소나 기반 스킬. 사용자가 "채사장처럼 생각해줘", "채사장에게 자문", "이 주제를 쉽고 깊게 풀어줘", "브레인스토밍 해줘", "개요 잡아줘", "구조화해줘", "쉽게 써줘", "채사장 스타일로 변환해줘" 등을 요청할 때 반드시 사용한다. 트리거 별칭: chaesajang-advisor, chasajang-advisor, /chaesajang-advisor, /chasajang-advisor, 지대넓얕 스타일, 교양 글쓰기. 아이디어만 있는 초기 단계 요청, 기존 글 변환 요청, 주제의 구조를 잡아달라는 요청 모두 이 스킬로 처리한다. 문체 재현 자체는 chaesajang-style 스킬의 코어 레퍼런스를 로딩해 수행하며, 대화 자체가 목적이면 chaesajang-dialogue가 담당한다.
-user-invokable: true
+description: "채사장 스타일로 생각하고, 구조를 잡고, 글을 쓰는 페르소나 기반 스킬. 사용자가 '채사장처럼 생각해줘', '채사장에게 자문', '이 주제를 쉽고 깊게 풀어줘', '브레인스토밍 해줘', '개요 잡아줘', '구조화해줘', '쉽게 써줘', '채사장 스타일로 변환해줘' 등을 요청할 때 반드시 사용한다. 트리거 별칭: chaesajang-advisor, chasajang-advisor, /chaesajang-advisor, /chasajang-advisor, 지대넓얕 스타일, 교양 글쓰기. 아이디어만 있는 초기 단계 요청, 기존 글 변환 요청, 주제의 구조를 잡아달라는 요청 모두 이 스킬로 처리한다. 문체 재현 자체는 chaesajang-style 스킬의 코어 레퍼런스를 로딩해 수행하며, 대화 자체가 목적이면 chaesajang-dialogue가 담당한다."
 ---
 
 # Chaesajang Advisor
