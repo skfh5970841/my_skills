@@ -95,7 +95,29 @@ def test_registry_rejects_absolute_sources(repo_root, load_registry, tmp_path):
         load_registry(family)
 
 
-def test_registry_rejects_unknown_keys_and_escaped_sources(repo_root, load_registry, tmp_path):
+def test_registry_rejects_unknown_top_level_keys(repo_root, load_registry, tmp_path):
+    family = tmp_path / "family"
+    family.mkdir()
+    (family / "chaesajang-core").mkdir()
+    (family / "family.yaml").write_text(
+        "schema_version: 1\n"
+        "core: chaesajang-core\n"
+        "skills:\n"
+        "  - name: known\n"
+        "    source: chaesajang-core\n"
+        "    core_files: []\n"
+        "    inject_gaze: false\n"
+        "generated: {}\n"
+        "adapters: {}\n"
+        "unexpected: true\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        load_registry(family)
+
+
+def test_registry_rejects_escaped_sources(repo_root, load_registry, tmp_path):
     family = tmp_path / "family"
     family.mkdir()
     (family / "chaesajang-core").mkdir()
@@ -108,8 +130,28 @@ def test_registry_rejects_unknown_keys_and_escaped_sources(repo_root, load_regis
         "    core_files: []\n"
         "    inject_gaze: false\n"
         "generated: {}\n"
-        "adapters: {}\n"
-        "unexpected: true\n",
+        "adapters: {}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        load_registry(family)
+
+
+def test_registry_rejects_missing_canonical_directories(repo_root, load_registry, tmp_path):
+    family = tmp_path / "family"
+    family.mkdir()
+    (family / "chaesajang-core").mkdir()
+    (family / "family.yaml").write_text(
+        "schema_version: 1\n"
+        "core: chaesajang-core\n"
+        "skills:\n"
+        "  - name: missing\n"
+        "    source: missing-skill\n"
+        "    core_files: []\n"
+        "    inject_gaze: false\n"
+        "generated: {}\n"
+        "adapters: {}\n",
         encoding="utf-8",
     )
 
