@@ -1,2 +1,5 @@
+/dist/
+/experiments/*
+!/experiments/README.md
 __pycache__/
 *.py[cod]

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Chaesajang Write Teacher"
+  short_description: "채사장식 교양 글쓰기를 함께 훈련하는 글쓰기 선생님"
+  default_prompt: "Use $chaesajang-write-teacher to start a Korean writing training session."

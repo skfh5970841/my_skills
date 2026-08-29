@@ -1,0 +1,33 @@
+schema_version: 1
+core: chaesajang-core
+skills:
+  - name: chaesajang-style
+    source: chaesajang-style
+    core_files: [persona_core.md, handoff_core.md, anti_patterns_core.md, reference_core.md, template_core.md, transformation_core.md]
+    inject_gaze: true
+  - name: chaesajang-advisor
+    source: chaesajang-advisor
+    core_files: [persona_core.md, handoff_core.md, anti_patterns_core.md, reference_core.md, template_core.md, transformation_core.md]
+    inject_gaze: false
+  - name: chaesajang-dialogue
+    source: chaesajang-dialogue
+    core_files: [persona_core.md, handoff_core.md]
+    inject_gaze: false
+  - name: chaesajang-style-youtube-scripter
+    source: chaesajang-style-youtube-scripter
+    core_files: [persona_core.md, handoff_core.md, anti_patterns_core.md, reference_core.md, template_core.md, transformation_core.md, anti_patterns_youtube.md, reference_youtube.md, template_youtube.md, transformation_youtube.md]
+    inject_gaze: true
+  - name: chaesajang-write-teacher
+    source: chaesajang-write-teacher
+    core_files: []
+    inject_gaze: false
+generated:
+  compatibility_snapshots: skills
+  dist: dist
+  experiments: experiments
+  package_extension: .skill
+adapters:
+  codex:
+    exclude: []
+  claude:
+    exclude: [agents]
