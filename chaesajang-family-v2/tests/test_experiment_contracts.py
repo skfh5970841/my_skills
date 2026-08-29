@@ -72,6 +72,72 @@ def test_transition_allows_only_declared_next_states(loop_modules):
         contracts.transition(manifest, contracts.ExperimentStatus.BASELINE_CAPTURED)
 
 
+@pytest.mark.parametrize(
+    "source_status",
+    ["baseline_captured", "candidate_ready"],
+)
+def test_blocked_external_preserves_completed_stage_artifacts(
+    tmp_path, loop_modules, source_status
+):
+    artifacts, contracts = loop_modules
+    manifest = make_manifest(contracts, status=source_status)
+    blocked = contracts.transition(manifest, contracts.ExperimentStatus.BLOCKED_EXTERNAL)
+
+    assert blocked.last_successful_status is manifest.status
+    assert artifacts.validate_artifacts(tmp_path, blocked, risk="behavior") == list(
+        artifacts.required_artifacts(manifest.status, "behavior")
+    )
+
+
+@pytest.mark.parametrize("terminal_status", ["blocked_external", "rejected", "invalid"])
+def test_terminal_manifest_requires_nonterminal_completed_stage_context(
+    loop_modules, terminal_status
+):
+    _, contracts = loop_modules
+    data = make_manifest(contracts).to_dict()
+    data["status"] = terminal_status
+    with pytest.raises(ValueError, match="last_successful_status"):
+        contracts.ExperimentManifest.from_dict(data)
+
+    data["last_successful_status"] = "invalid"
+    with pytest.raises(ValueError, match="last_successful_status"):
+        contracts.ExperimentManifest.from_dict(data)
+
+
+@pytest.mark.parametrize(
+    ("source_status", "terminal_status"),
+    [
+        ("hypothesis_ready", "rejected"),
+        ("auto_evaluated", "invalid"),
+    ],
+)
+def test_other_contextual_terminal_states_require_source_stage_artifacts(
+    tmp_path, loop_modules, source_status, terminal_status
+):
+    artifacts, contracts = loop_modules
+    manifest = make_manifest(contracts, status=source_status)
+    terminal = contracts.transition(
+        manifest, contracts.ExperimentStatus(terminal_status)
+    )
+
+    assert terminal.last_successful_status is manifest.status
+    assert artifacts.validate_artifacts(tmp_path, terminal, risk="behavior") == list(
+        artifacts.required_artifacts(manifest.status, "behavior")
+    )
+
+
+def test_resume_from_blocked_external_returns_only_to_recorded_stage(loop_modules):
+    _, contracts = loop_modules
+    manifest = make_manifest(contracts, status="candidate_ready")
+    blocked = contracts.transition(manifest, contracts.ExperimentStatus.BLOCKED_EXTERNAL)
+
+    resumed = contracts.transition(blocked, contracts.ExperimentStatus.CANDIDATE_READY)
+    assert resumed.status is contracts.ExperimentStatus.CANDIDATE_READY
+    assert resumed.last_successful_status is None
+    with pytest.raises(ValueError, match="recorded successful state"):
+        contracts.transition(blocked, contracts.ExperimentStatus.BASELINE_CAPTURED)
+
+
 def test_completed_stages_require_only_completed_artifacts(loop_modules):
     artifacts, contracts = loop_modules
     assert artifacts.required_artifacts(contracts.ExperimentStatus.RESEARCHING, "low") == (
@@ -134,11 +200,20 @@ def test_write_jsonl_uses_replace_after_writing_a_sibling(tmp_path, loop_modules
     assert artifacts.read_jsonl(destination) == [{"case_id": "one"}, {"case_id": "two"}]
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_write_jsonl_rejects_nonstandard_numeric_values(tmp_path, loop_modules, value):
+    artifacts, _ = loop_modules
+    with pytest.raises(ValueError):
+        artifacts.write_jsonl(tmp_path / "rows.jsonl", [{"score": value}])
+
+
 @pytest.mark.parametrize(
     ("contents", "message"),
     [
         ('{"ok": true}\nnot-json\n', "invalid JSONL"),
         ('["not-a-row"]\n', "JSON object"),
+        ('{"score": NaN}\n', "invalid JSONL"),
+        ('{"score": Infinity}\n', "invalid JSONL"),
     ],
 )
 def test_read_jsonl_rejects_malformed_rows(tmp_path, loop_modules, contents, message):

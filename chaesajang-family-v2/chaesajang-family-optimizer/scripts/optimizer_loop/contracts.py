@@ -84,6 +84,17 @@ _MANIFEST_FIELDS = {
     "dataset_versions",
     "command",
     "created_at",
+    "last_successful_status",
+}
+
+_CONTEXTUAL_TERMINAL_STATUSES = {
+    ExperimentStatus.BLOCKED_EXTERNAL,
+    ExperimentStatus.REJECTED,
+    ExperimentStatus.INVALID,
+}
+_TERMINAL_STATUSES = {
+    ExperimentStatus.PROMOTED,
+    *_CONTEXTUAL_TERMINAL_STATUSES,
 }
 
 
@@ -130,13 +141,14 @@ class ExperimentManifest:
     dataset_versions: dict[str, str]
     command: tuple[str, ...]
     created_at: str
+    last_successful_status: ExperimentStatus | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "ExperimentManifest":
         if not isinstance(data, dict):
             raise ValueError("manifest must be a mapping")
         unknown = set(data) - _MANIFEST_FIELDS
-        missing = _MANIFEST_FIELDS - set(data)
+        missing = (_MANIFEST_FIELDS - {"last_successful_status"}) - set(data)
         if unknown:
             raise ValueError(f"unknown manifest fields: {sorted(unknown)}")
         if missing:
@@ -145,6 +157,31 @@ class ExperimentManifest:
             status = ExperimentStatus(data["status"])
         except (TypeError, ValueError) as error:
             raise ValueError(f"unknown experiment status: {data['status']!r}") from error
+        raw_last_successful = data.get("last_successful_status")
+        if raw_last_successful is None:
+            last_successful_status = None
+        else:
+            try:
+                last_successful_status = ExperimentStatus(raw_last_successful)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"unknown last_successful_status: {raw_last_successful!r}"
+                ) from error
+            if last_successful_status in _TERMINAL_STATUSES:
+                raise ValueError("last_successful_status must not be terminal")
+        if status in _CONTEXTUAL_TERMINAL_STATUSES:
+            if last_successful_status is None:
+                raise ValueError(
+                    "last_successful_status is required for terminal experiment states"
+                )
+            if status not in ALLOWED[last_successful_status]:
+                raise ValueError(
+                    "last_successful_status cannot transition to the terminal status"
+                )
+        elif last_successful_status is not None:
+            raise ValueError(
+                "last_successful_status is only valid for contextual terminal states"
+            )
 
         command = data["command"]
         if not isinstance(command, list) or not command or not all(
@@ -167,6 +204,7 @@ class ExperimentManifest:
             dataset_versions=_string_mapping(data["dataset_versions"], "dataset_versions"),
             command=tuple(command),
             created_at=created_at,
+            last_successful_status=last_successful_status,
         )
 
     def to_dict(self) -> dict:
@@ -180,6 +218,11 @@ class ExperimentManifest:
             "dataset_versions": dict(self.dataset_versions),
             "command": list(self.command),
             "created_at": self.created_at,
+            **(
+                {"last_successful_status": self.last_successful_status.value}
+                if self.last_successful_status is not None
+                else {}
+            ),
         }
 
 
@@ -193,6 +236,11 @@ def transition(manifest: ExperimentManifest, target: ExperimentStatus) -> Experi
         raise ValueError(
             f"invalid transition: {manifest.status.value} -> {target.value}"
         )
+    if manifest.status is ExperimentStatus.BLOCKED_EXTERNAL:
+        if manifest.last_successful_status is None:
+            raise ValueError("blocked_external requires a recorded successful state")
+        if target is not manifest.last_successful_status:
+            raise ValueError("blocked_external may resume only to its recorded successful state")
     return ExperimentManifest(
         experiment_id=manifest.experiment_id,
         status=target,
@@ -203,4 +251,9 @@ def transition(manifest: ExperimentManifest, target: ExperimentStatus) -> Experi
         dataset_versions=dict(manifest.dataset_versions),
         command=tuple(manifest.command),
         created_at=manifest.created_at,
+        last_successful_status=(
+            manifest.status
+            if target in _CONTEXTUAL_TERMINAL_STATUSES
+            else None
+        ),
     )

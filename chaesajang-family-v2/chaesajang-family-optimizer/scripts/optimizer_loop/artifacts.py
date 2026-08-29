@@ -8,7 +8,13 @@ import tempfile
 from collections.abc import Iterable
 from pathlib import Path
 
-from .contracts import ExperimentManifest, ExperimentStatus
+from .contracts import (
+    ALLOWED,
+    ExperimentManifest,
+    ExperimentStatus,
+    _CONTEXTUAL_TERMINAL_STATUSES,
+    _TERMINAL_STATUSES,
+)
 
 
 _COMPLETED_ARTIFACTS: dict[ExperimentStatus, tuple[str, ...]] = {
@@ -86,6 +92,8 @@ def required_artifacts(status: ExperimentStatus, risk: str) -> tuple[str, ...]:
     """Return artifacts required by work completed at *status*, never later work."""
     if not isinstance(status, ExperimentStatus):
         raise TypeError("status must be an ExperimentStatus")
+    if status in _CONTEXTUAL_TERMINAL_STATUSES:
+        raise ValueError("terminal status requires manifest context")
     artifacts = _COMPLETED_ARTIFACTS[status]
     if _requires_human_review(risk):
         if status is ExperimentStatus.AWAITING_HUMAN:
@@ -102,11 +110,24 @@ def validate_artifacts(
     if not isinstance(manifest, ExperimentManifest):
         raise TypeError("manifest must be an ExperimentManifest")
     root = Path(experiment_dir)
+    completed_status = manifest.status
+    if manifest.status in _CONTEXTUAL_TERMINAL_STATUSES:
+        completed_status = manifest.last_successful_status
+        if (
+            completed_status is None
+            or completed_status in _TERMINAL_STATUSES
+            or manifest.status not in ALLOWED[completed_status]
+        ):
+            raise ValueError("terminal manifest has invalid last_successful_status")
     return [
         artifact
-        for artifact in required_artifacts(manifest.status, risk)
+        for artifact in required_artifacts(completed_status, risk)
         if not (root / artifact).is_file()
     ]
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON numeric constant: {value}")
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -122,9 +143,9 @@ def read_jsonl(path: Path) -> list[dict]:
         if not line.strip():
             continue
         try:
-            row = json.loads(line)
-        except json.JSONDecodeError as error:
-            raise ValueError(f"invalid JSONL at line {number}: {error.msg}") from error
+            row = json.loads(line, parse_constant=_reject_json_constant)
+        except (json.JSONDecodeError, ValueError) as error:
+            raise ValueError(f"invalid JSONL at line {number}: {error}") from error
         if not isinstance(row, dict):
             raise ValueError(f"JSONL line {number} must be a JSON object")
         rows.append(row)
@@ -150,7 +171,9 @@ def write_jsonl(path: Path, rows: Iterable[dict]) -> None:
             for row in rows:
                 if not isinstance(row, dict):
                     raise ValueError("JSONL rows must be dictionaries")
-                temporary.write(json.dumps(row, ensure_ascii=False, sort_keys=True))
+                temporary.write(
+                    json.dumps(row, ensure_ascii=False, sort_keys=True, allow_nan=False)
+                )
                 temporary.write("\n")
             temporary.flush()
             os.fsync(temporary.fileno())
