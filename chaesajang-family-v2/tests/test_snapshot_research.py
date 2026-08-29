@@ -23,7 +23,7 @@ def loop_modules():
 def registry_factory(loop_modules):
     _, _, FamilyRegistry, SkillSpec = loop_modules
 
-    def factory(root: Path) -> FamilyRegistry:
+    def factory(root: Path, *, generated: dict | None = None) -> FamilyRegistry:
         core = root / "chaesajang-core"
         skill = root / "chaesajang-style"
         core.mkdir()
@@ -34,7 +34,7 @@ def registry_factory(loop_modules):
             root=root,
             core=core,
             skills=(SkillSpec("chaesajang-style", skill, (), False),),
-            generated={},
+            generated={} if generated is None else generated,
         )
 
     return factory
@@ -87,6 +87,33 @@ def test_snapshot_uses_only_registry_paths_and_excludes_generated_content(
         "chaesajang-style/SKILL.md",
     }
     assert all("\\" not in path for path in hashes)
+
+
+def test_snapshot_excludes_configured_compatibility_roots_and_cache_files(
+    tmp_path, registry_factory, loop_modules
+):
+    snapshot, _, _, _ = loop_modules
+    registry = registry_factory(
+        tmp_path,
+        generated={
+            "compatibility_snapshots": "chaesajang-core/compatibility-output"
+        },
+    )
+    for relative in (
+        "chaesajang-core/compatibility-output/copied.md",
+        "chaesajang-core/cache/runtime.md",
+        "chaesajang-core/compiled.cache",
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("generated", encoding="utf-8")
+
+    hashes = snapshot.snapshot_registry(registry)
+
+    assert set(hashes) == {
+        "chaesajang-core/persona_core.md",
+        "chaesajang-style/SKILL.md",
+    }
 
 
 def test_combined_snapshot_hash_is_stable_for_mapping_order(loop_modules):
@@ -174,6 +201,40 @@ def test_select_delta_claims_filters_source_date_and_relevant_tags(loop_modules)
     ) == [claims[0]]
 
 
+def test_select_delta_claims_keeps_month_precision_conservatively(loop_modules):
+    _, research, _, _ = loop_modules
+    month_claim = claim_data(source_date="2026-08")
+    full_date_claim = claim_data(source_date="2026-08-01")
+
+    assert research.select_delta_claims(
+        [month_claim, full_date_claim], since=date(2026, 8, 15), tags=set()
+    ) == [research.normalize_claim(month_claim)]
+
+
+def test_select_delta_claims_uses_only_local_evidence_tags(loop_modules):
+    _, research, _, _ = loop_modules
+    narrative_only = claim_data(
+        claim="persona_core is mentioned in this narrative but not as local evidence.",
+        local_evidence=["chaesajang-style/SKILL.md"],
+    )
+
+    assert research.select_delta_claims(
+        [narrative_only], since=date(2026, 8, 1), tags={"persona_core"}
+    ) == []
+
+
+def test_select_delta_claims_returns_normalized_records_not_stale_input(loop_modules):
+    _, research, _, _ = loop_modules
+    stale = {**claim_data(), "status": "watchlist"}
+
+    selected = research.select_delta_claims(
+        [stale], since=date(2026, 8, 1), tags={"persona_core"}
+    )
+
+    assert selected == [research.normalize_claim(claim_data())]
+    assert selected[0] is not stale
+
+
 def test_normalize_claim_preserves_verified_month_precision(loop_modules):
     _, research, _, _ = loop_modules
 
@@ -208,3 +269,23 @@ def test_seed_index_contains_exactly_the_nine_primary_sources(loop_modules):
         == record
         for record in records
     )
+
+
+def test_living_document_cards_keep_version_provenance_distinct_from_checked_at(
+    loop_modules,
+):
+    _, research, _, _ = loop_modules
+    index = Path(__file__).resolve().parents[1] / "research" / "index.jsonl"
+    records = {record["source_url"]: record for record in research.read_jsonl(index)}
+    expected_dates = {
+        "https://developers.openai.com/api/docs/guides/latest-model": "2026-06-26",
+        "https://developers.openai.com/api/docs/guides/evaluation-best-practices": "2026-08-29",
+        "https://developers.openai.com/api/docs/guides/graders": "2026-08-29",
+    }
+
+    for source_url, source_date in expected_dates.items():
+        record = records[source_url]
+        assert record["checked_at"] == "2026-08-30"
+        assert record["source_date"] == source_date
+        assert record["source_date"] != record["checked_at"]
+        assert "version provenance" in record["evidence"]

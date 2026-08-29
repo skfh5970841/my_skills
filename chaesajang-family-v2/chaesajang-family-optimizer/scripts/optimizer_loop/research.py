@@ -50,10 +50,11 @@ def _iso_date(data: dict, field: str, *, allow_month: bool = False) -> str:
     return value
 
 
-def _source_date_floor(value: str) -> date:
+def _is_after_since(value: str, since: date) -> bool:
     if _YEAR_MONTH.fullmatch(value):
-        return date.fromisoformat(f"{value}-01")
-    return date.fromisoformat(value)
+        year, month = (int(part) for part in value.split("-"))
+        return (year, month) >= (since.year, since.month)
+    return date.fromisoformat(value) > since
 
 
 def normalize_claim(data: dict) -> dict:
@@ -124,16 +125,11 @@ def select_delta_claims(
     selected: list[dict] = []
     for claim in claims:
         normalized = normalize_claim({key: value for key, value in claim.items() if key != "status"})
-        if _source_date_floor(normalized["source_date"]) <= since:
+        if not _is_after_since(normalized["source_date"], since):
             continue
-        searchable = "\n".join(
-            [
-                normalized["claim"],
-                normalized["evidence"],
-                normalized["decision_impact"],
-                *normalized["local_evidence"],
-            ]
-        ).casefold()
-        if not normalized_tags or any(tag in searchable for tag in normalized_tags):
-            selected.append(claim)
+        local_evidence = [item.casefold() for item in normalized["local_evidence"]]
+        if not normalized_tags or any(
+            tag in item for tag in normalized_tags for item in local_evidence
+        ):
+            selected.append(normalized)
     return selected

@@ -25,12 +25,33 @@ _EXCLUDED_PARTS = frozenset(
 )
 
 
-def _is_included(path: Path) -> bool:
-    return not any(part in _EXCLUDED_PARTS for part in path.parts)
+def _compatibility_snapshot_roots(registry: FamilyRegistry) -> tuple[Path, ...]:
+    configured = registry.generated.get("compatibility_snapshots")
+    values = (configured,) if isinstance(configured, str) else configured
+    if not isinstance(values, (tuple, list)):
+        return ()
+    roots: list[Path] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        candidate = Path(value)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            continue
+        roots.append(candidate)
+    return tuple(roots)
+
+
+def _is_included(path: Path, compatibility_roots: tuple[Path, ...]) -> bool:
+    if any(part in _EXCLUDED_PARTS for part in path.parts):
+        return False
+    if path.name.casefold().endswith(".cache"):
+        return False
+    return not any(path == root or root in path.parents for root in compatibility_roots)
 
 
 def _canonical_files(registry: FamilyRegistry) -> list[Path]:
     root = registry.root.resolve()
+    compatibility_roots = _compatibility_snapshot_roots(registry)
     files: list[Path] = []
     for declared in registry.canonical_paths():
         source = Path(declared)
@@ -50,7 +71,7 @@ def _canonical_files(registry: FamilyRegistry) -> list[Path]:
             if candidate.is_symlink() or not candidate.is_file():
                 continue
             relative = candidate.relative_to(root)
-            if _is_included(relative):
+            if _is_included(relative, compatibility_roots):
                 files.append(candidate)
     return files
 
