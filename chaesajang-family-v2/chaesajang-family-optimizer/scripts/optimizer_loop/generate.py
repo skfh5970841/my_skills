@@ -76,8 +76,13 @@ def _skill_tree(root: Path, target_skill: str) -> tuple[Path, Path]:
 
 
 def _skill_snapshot(skill: Path) -> dict[str, str]:
+    def fail_walk(error: OSError) -> None:
+        raise ValueError(f"selected skill source is inaccessible: {skill}") from error
+
     files: list[Path] = []
-    for current, directories, filenames in os.walk(skill, topdown=True, followlinks=False):
+    for current, directories, filenames in os.walk(
+        skill, topdown=True, onerror=fail_walk, followlinks=False
+    ):
         current_path = Path(current)
         for name in (*directories, *filenames):
             candidate = current_path / name
@@ -124,6 +129,8 @@ def generate_cases(
     """Generate stable case/repeat rows without exposing evaluator-only fields."""
     if not isinstance(config, RunConfig):
         raise TypeError("config must be a RunConfig")
+    if config.runtime != "codex":
+        raise ValueError("generation runtime must be codex")
     if not isinstance(repeats, int) or isinstance(repeats, bool):
         raise TypeError("repeats must be a positive integer")
     if repeats <= 0:

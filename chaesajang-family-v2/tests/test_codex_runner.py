@@ -308,6 +308,57 @@ def test_source_snapshot_changes_with_any_regular_skill_file(
     assert list(after["source_snapshot"]) == sorted(after["source_snapshot"])
 
 
+def test_generation_rejects_non_codex_runtime_before_running(
+    tmp_path, loop_modules, monkeypatch
+):
+    generate, runner = loop_modules
+    make_skill(tmp_path)
+    config = runner.RunConfig(
+        command=("claude", "-p"),
+        cwd=tmp_path,
+        timeout_seconds=5,
+        stdin_text="",
+        model="fake-model",
+        reasoning="high",
+        runtime="claude",
+    )
+    monkeypatch.setattr(
+        generate,
+        "run_command",
+        lambda _config: pytest.fail("non-Codex generation must fail before execution"),
+    )
+
+    with pytest.raises(ValueError, match="runtime.*codex"):
+        generate.generate_cases([eval_case()], tmp_path, config, repeats=1)
+
+
+def test_generation_rejects_incomplete_snapshot_when_directory_walk_fails(
+    tmp_path, loop_modules, monkeypatch
+):
+    generate, runner = loop_modules
+    make_skill(tmp_path)
+    monkeypatch.setattr(
+        generate,
+        "run_command",
+        lambda _config: pytest.fail("incomplete snapshot must fail before execution"),
+    )
+
+    def inaccessible_walk(*_args, **kwargs):
+        onerror = kwargs.get("onerror")
+        if onerror is not None:
+            onerror(PermissionError("injected directory denial"))
+        return iter(())
+
+    monkeypatch.setattr(generate.os, "walk", inaccessible_walk)
+    with pytest.raises(ValueError, match="inaccessible"):
+        generate.generate_cases(
+            [eval_case()],
+            tmp_path,
+            run_config(runner, tmp_path, ("codex", "exec", "-")),
+            repeats=1,
+        )
+
+
 @pytest.mark.parametrize("repeats", [0, -1, True, 1.5, "2"])
 def test_generation_rejects_invalid_repeats_before_running(
     tmp_path, loop_modules, monkeypatch, repeats
