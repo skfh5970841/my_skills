@@ -105,8 +105,9 @@ def test_candidate_rejects_path_that_is_already_outside_experiment(tmp_path, reg
 def test_changed_files_rejects_candidate_root_symlink_to_external_tree(
     tmp_path, registry_factory, loop_modules
 ):
-    candidate_module, _, _, _, _ = loop_modules
+    candidate_module, _, snapshot, _, _ = loop_modules
     registry = registry_factory(tmp_path)
+    baseline = snapshot.snapshot_registry(registry)
     outside = tmp_path.parent / "candidate-outside"
     outside.mkdir()
     (outside / "chaesajang-core").mkdir()
@@ -118,7 +119,7 @@ def test_changed_files_rejects_candidate_root_symlink_to_external_tree(
     candidate.symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(ValueError, match="candidate root"):
-        candidate_module.changed_canonical_files(registry, candidate, {})
+        candidate_module.changed_canonical_files(registry, candidate, baseline)
 
 
 def test_changed_files_rejects_nested_candidate_symlink_to_external_tree(
@@ -183,6 +184,61 @@ def test_changed_canonical_files_detects_modified_deleted_and_added_files(
     )
 
 
+def test_changed_files_rejects_file_to_directory_replacement(
+    tmp_path, registry_factory, loop_modules
+):
+    candidate_module, _, snapshot, _, _ = loop_modules
+    registry = registry_factory(tmp_path)
+    baseline = snapshot.snapshot_registry(registry)
+    candidate = candidate_module.create_candidate(registry, tmp_path / "experiment")
+    target = candidate / "chaesajang-core" / "persona_core.md"
+    target.unlink()
+    target.mkdir()
+    (target / "nested.md").write_text("hidden change\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="file-to-directory"):
+        candidate_module.changed_canonical_files(registry, candidate, baseline)
+
+
+def test_changed_files_rejects_incomplete_baseline(
+    tmp_path, registry_factory, loop_modules
+):
+    candidate_module, _, snapshot, _, _ = loop_modules
+    registry = registry_factory(tmp_path)
+    baseline = snapshot.snapshot_registry(registry)
+    baseline.pop("chaesajang-core/persona_core.md")
+    candidate = candidate_module.create_candidate(registry, tmp_path / "experiment")
+
+    with pytest.raises(ValueError, match="baseline"):
+        candidate_module.changed_canonical_files(registry, candidate, baseline)
+
+
+def test_changed_files_rejects_extra_baseline_path(
+    tmp_path, registry_factory, loop_modules
+):
+    candidate_module, _, snapshot, _, _ = loop_modules
+    registry = registry_factory(tmp_path)
+    baseline = snapshot.snapshot_registry(registry)
+    baseline["chaesajang-core/extra.md"] = "0" * 64
+    candidate = candidate_module.create_candidate(registry, tmp_path / "experiment")
+
+    with pytest.raises(ValueError, match="baseline"):
+        candidate_module.changed_canonical_files(registry, candidate, baseline)
+
+
+def test_changed_files_rejects_stale_current_canonical_snapshot(
+    tmp_path, registry_factory, loop_modules
+):
+    candidate_module, _, snapshot, _, _ = loop_modules
+    registry = registry_factory(tmp_path)
+    baseline = snapshot.snapshot_registry(registry)
+    candidate = candidate_module.create_candidate(registry, tmp_path / "experiment")
+    (registry.core / "persona_core.md").write_text("canonical drift\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="baseline"):
+        candidate_module.changed_canonical_files(registry, candidate, baseline)
+
+
 def test_two_change_groups_are_invalid(hypothesis, loop_modules):
     candidate_module, _, _, _, _ = loop_modules
 
@@ -244,20 +300,17 @@ def test_validate_change_scope_rejects_noncanonical_and_escaping_changes(
     assert len(errors) == 2
 
 
-def test_validate_change_scope_allows_descendants_of_allowed_directory(
-    hypothesis_file, loop_modules
+def test_validate_change_scope_requires_exact_allowed_file_paths(
+    hypothesis, loop_modules
 ):
-    _, hypothesis_module, _, _, _ = loop_modules
-    text = hypothesis_file.read_text(encoding="utf-8").replace(
-        "chaesajang-core/persona_core.md", "chaesajang-core"
-    )
-    hypothesis_file.write_text(text, encoding="utf-8")
-    hypothesis = hypothesis_module.Hypothesis.from_markdown(hypothesis_file)
     candidate_module, _, _, _, _ = loop_modules
 
     assert candidate_module.validate_change_scope(
-        hypothesis, ["chaesajang-core/nested.md"]
+        hypothesis, ["chaesajang-core/persona_core.md"]
     ) == []
+    assert candidate_module.validate_change_scope(
+        hypothesis, ["chaesajang-core/persona_core.md/nested.md"]
+    )
 
 
 def test_write_candidate_patch_is_deterministic_utf8_unified_diff(

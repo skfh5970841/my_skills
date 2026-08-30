@@ -101,12 +101,28 @@ def _candidate_bytes(registry: FamilyRegistry, candidate_root: Path) -> dict[str
     return copied
 
 
+def _reject_file_to_directory_replacement(
+    registry: FamilyRegistry, candidate_root: Path, baseline: Mapping[str, str]
+) -> None:
+    """Reject a candidate directory that occupies a baseline file's path."""
+    root = _candidate_root(registry, candidate_root)
+    for path in root.rglob("*"):
+        if path.is_symlink() or not path.is_dir():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative in baseline:
+            raise ValueError(f"candidate file-to-directory replacement: {relative}")
+
+
 def _baseline_bytes(registry: FamilyRegistry) -> dict[str, bytes]:
     root = registry.root.resolve()
     return {relative: (root / relative).read_bytes() for relative in snapshot_registry(registry)}
 
 
 def _validate_baseline(registry: FamilyRegistry, baseline: Mapping[str, str]) -> None:
+    if not isinstance(baseline, Mapping):
+        raise TypeError("baseline must be a mapping of canonical paths to SHA-256 hashes")
+    _audit_source_symlinks(registry)
     declared = _declared_relatives(registry)
     for path, digest in baseline.items():
         relative = canonical_relative_path(path, "baseline path")
@@ -118,6 +134,11 @@ def _validate_baseline(registry: FamilyRegistry, baseline: Mapping[str, str]) ->
             or any(character not in "0123456789abcdef" for character in digest)
         ):
             raise ValueError(f"baseline hash must be a string: {path}")
+    expected = snapshot_registry(registry)
+    if set(baseline) != set(expected):
+        raise ValueError("baseline must exactly match the current canonical snapshot paths")
+    if any(baseline[path] != expected[path] for path in expected):
+        raise ValueError("baseline hashes must exactly match the current canonical snapshot")
 
 
 def create_candidate(registry: FamilyRegistry, experiment_dir: Path) -> Path:
@@ -153,7 +174,11 @@ def changed_canonical_files(
 ) -> tuple[str, ...]:
     """Return sorted canonical paths changed, deleted, or added in a candidate."""
     _validate_baseline(registry, baseline)
+    _reject_file_to_directory_replacement(registry, candidate_root, baseline)
     current = _candidate_bytes(registry, candidate_root)
+    for path in current:
+        if any(str(ancestor) in baseline for ancestor in PurePosixPath(path).parents):
+            raise ValueError(f"candidate file-to-directory replacement: {path}")
     changed = {
         path
         for path in set(baseline) | set(current)
@@ -175,11 +200,7 @@ def validate_change_scope(hypothesis: Hypothesis, changed: Iterable[str]) -> lis
         except ValueError as error:
             errors.append(str(error))
             continue
-        if not any(
-            relative == allowed
-            or PurePosixPath(allowed) in PurePosixPath(relative).parents
-            for allowed in hypothesis.allowed_paths
-        ):
+        if relative not in hypothesis.allowed_paths:
             errors.append(
                 f"changed path is outside change_group {hypothesis.change_group}: {relative}"
             )
