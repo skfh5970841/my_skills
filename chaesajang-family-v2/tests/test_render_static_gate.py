@@ -1,4 +1,6 @@
 import hashlib
+import os
+import shutil
 import sys
 import zipfile
 from pathlib import Path
@@ -58,6 +60,7 @@ def registry_factory(tmp_path, loop_modules):
             "generated:\n"
             "  compatibility_snapshots: skills\n"
             "  dist: dist\n"
+            "  experiments: experiments\n"
             "  package_extension: .skill\n"
             "adapters:\n"
             "  codex:\n"
@@ -88,11 +91,12 @@ def test_renderer_overwrites_core_and_injects_exact_gaze_block(tmp_path, registr
     registry = registry_factory()
     _, _, _, render_skill, _ = loop_modules
     alpha = next(skill for skill in registry.skills if skill.name == "alpha")
-    hashes = render_skill(registry, alpha, registry.root, tmp_path / "alpha", "codex")
+    destination = tmp_path / "rendered" / "alpha"
+    hashes = render_skill(registry, alpha, registry.root, destination, "codex")
 
-    assert (tmp_path / "alpha" / "references" / "persona_core.md").read_text(encoding="utf-8") == "canonical persona\n"
-    assert (tmp_path / "alpha" / "SKILL.md").read_text(encoding="utf-8").count("canonical gaze") == 1
-    assert hashes["SKILL.md"] == hashlib.sha256((tmp_path / "alpha" / "SKILL.md").read_bytes()).hexdigest()
+    assert (destination / "references" / "persona_core.md").read_text(encoding="utf-8") == "canonical persona\n"
+    assert (destination / "SKILL.md").read_text(encoding="utf-8").count("canonical gaze") == 1
+    assert hashes["SKILL.md"] == hashlib.sha256((destination / "SKILL.md").read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("body", ["# alpha\n", "<!-- CORE:gaze BEGIN -->\na\n<!-- CORE:gaze END -->\n<!-- CORE:gaze BEGIN -->\nb\n<!-- CORE:gaze END -->\n"])
@@ -104,7 +108,7 @@ def test_renderer_rejects_missing_or_duplicate_gaze_markers(tmp_path, registry_f
         "---\nname: alpha\ndescription: test\n---\n" + body, encoding="utf-8"
     )
     with pytest.raises(ValueError, match="CORE:gaze"):
-        render_skill(registry, alpha, registry.root, tmp_path / "alpha", "codex")
+        render_skill(registry, alpha, registry.root, tmp_path / "rendered" / "alpha", "codex")
 
 
 def test_packages_have_stable_hashes_sorted_top_level_and_timestamps(tmp_path, registry_factory, loop_modules):
@@ -136,7 +140,7 @@ def test_static_gate_collects_frontmatter_reference_core_snapshot_adapter_and_pa
         encoding="utf-8",
     )
     (registry.root / "beta" / "SKILL.md").write_text(
-        "---\nname: wrong-name\ndescription: test\n---\nRead `references/missing.md`.\n", encoding="utf-8"
+        "---\nname: wrong-name\ndescription: test\n---\n[missing](references/missing.md)\n", encoding="utf-8"
     )
     (registry.root / "alpha" / "references" / "persona_core.md").write_text("drift\n", encoding="utf-8")
     (registry.root / "skills" / "alpha.SKILL.md").write_text("snapshot drift\n", encoding="utf-8")
@@ -174,3 +178,131 @@ def test_static_gate_reports_duplicate_marker_drift_without_short_circuiting(tmp
     assert not result.passed
     assert any("duplicate CORE:gaze" in error for error in result.errors)
     assert any("compatibility snapshot drift" in error for error in result.errors)
+
+
+def test_render_all_rolls_back_every_destination_when_snapshot_publication_fails(tmp_path, registry_factory, loop_modules, monkeypatch):
+    registry = registry_factory()
+    _, _, render_all, _, _ = loop_modules
+    import optimizer_loop.render as render_module
+
+    dist = tmp_path / "dist"
+    snapshots = registry.root / "skills"
+    dist.mkdir()
+    (dist / "old.txt").write_text("old dist\n", encoding="utf-8")
+    snapshots.mkdir()
+    (snapshots / "old.SKILL.md").write_text("old snapshots\n", encoding="utf-8")
+    original_replace = os.replace
+
+    def fail_snapshot_publish(source, destination):
+        if Path(destination) == snapshots and Path(source).name == "snapshots":
+            raise OSError("injected snapshot publication failure")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(render_module.os, "replace", fail_snapshot_publish)
+    with pytest.raises(OSError, match="injected snapshot"):
+        render_all(registry, registry.root, dist)
+
+    assert (dist / "old.txt").read_text(encoding="utf-8") == "old dist\n"
+    assert (snapshots / "old.SKILL.md").read_text(encoding="utf-8") == "old snapshots\n"
+    assert not list(tmp_path.glob(".render-*"))
+    assert not [path for path in tmp_path.iterdir() if ".backup-" in path.name]
+
+
+def test_static_gate_collects_output_categories_after_missing_entrypoint(tmp_path, registry_factory, loop_modules):
+    registry = registry_factory()
+    _, _, render_all, _, run_static_gate = loop_modules
+    dist = tmp_path / "dist"
+    render_all(registry, registry.root, dist)
+    (registry.root / "alpha" / "SKILL.md").unlink()
+    (dist / "codex" / "alpha" / "SKILL.md").unlink()
+    (dist / "packages" / "alpha.skill").write_bytes(b"not a zip")
+
+    result = run_static_gate(registry, registry.root, dist)
+    joined = "\n".join(result.errors)
+
+    assert "missing SKILL.md" in joined
+    assert "adapter drift" in joined
+    assert "ZIP layout" in joined
+    assert "package hash mismatch" in joined
+
+
+def test_static_gate_uses_document_relative_links_without_source_root_fallback(tmp_path, registry_factory, loop_modules):
+    registry = registry_factory()
+    _, _, render_all, _, run_static_gate = loop_modules
+    dist = tmp_path / "dist"
+    render_all(registry, registry.root, dist)
+    (registry.root / "alpha" / "references" / "nested.md").write_text(
+        "[wrong from nested](references/persona_core.md)\n", encoding="utf-8"
+    )
+
+    result = run_static_gate(registry, registry.root, dist)
+
+    assert any("broken relative reference references/persona_core.md" in error for error in result.errors)
+
+
+def test_static_gate_reports_gaze_content_drift_separately_from_marker_count(tmp_path, registry_factory, loop_modules):
+    registry = registry_factory()
+    _, _, render_all, _, run_static_gate = loop_modules
+    dist = tmp_path / "dist"
+    render_all(registry, registry.root, dist)
+    source = registry.root / "alpha" / "SKILL.md"
+    source.write_text(source.read_text(encoding="utf-8").replace("stale gaze", "different gaze"), encoding="utf-8")
+
+    result = run_static_gate(registry, registry.root, dist)
+
+    assert any("gaze content drift" in error for error in result.errors)
+    assert not any("duplicate CORE:gaze" in error for error in result.errors)
+
+
+def test_codex_output_cannot_exclude_canonical_files(tmp_path, registry_factory, loop_modules):
+    registry = registry_factory()
+    family = registry.root / "family.yaml"
+    family.write_text(family.read_text(encoding="utf-8").replace("  codex:\n    exclude: []", "  codex:\n    exclude: [agents]"), encoding="utf-8")
+    load_registry, _, render_all, _, run_static_gate = loop_modules
+
+    with pytest.raises(ValueError, match="codex"):
+        load_registry(registry.root)
+
+    render_all(registry, registry.root, tmp_path / "dist")
+    assert (tmp_path / "dist" / "codex" / "alpha" / "agents").is_dir()
+    assert run_static_gate(registry, registry.root, tmp_path / "dist").passed is False
+
+
+@pytest.mark.filterwarnings("ignore:Duplicate name:UserWarning")
+def test_static_gate_rejects_traversal_duplicate_bad_metadata_and_wrong_zip_content(tmp_path, registry_factory, loop_modules):
+    registry = registry_factory()
+    _, _, render_all, _, run_static_gate = loop_modules
+    dist = tmp_path / "dist"
+    render_all(registry, registry.root, dist)
+    package = dist / "packages" / "alpha.skill"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("alpha/../escape.md", "escape")
+        archive.writestr("alpha/SKILL.md", "wrong")
+        archive.writestr("alpha/SKILL.md", "duplicate")
+
+    result = run_static_gate(registry, registry.root, dist)
+    joined = "\n".join(result.errors)
+    assert "ZIP layout" in joined
+    assert "ZIP metadata" in joined
+    assert "ZIP content" in joined
+    assert "package hash mismatch" in joined
+
+
+def test_static_gate_does_not_self_validate_a_broken_packager(tmp_path, registry_factory, loop_modules, monkeypatch):
+    registry = registry_factory()
+    _, _, render_all, _, run_static_gate = loop_modules
+    import optimizer_loop.static_gate as gate_module
+
+    dist = tmp_path / "dist"
+    render_all(registry, registry.root, dist)
+    package = dist / "packages" / "alpha.skill"
+    package.write_bytes(package.read_bytes() + b"corruption")
+
+    def broken_expected_packager(_skill_dir, output):
+        shutil.copyfile(package, output)
+        return hashlib.sha256(package.read_bytes()).hexdigest()
+
+    monkeypatch.setattr(gate_module, "package_skill", broken_expected_packager, raising=False)
+    result = run_static_gate(registry, registry.root, dist)
+
+    assert any("package hash mismatch" in error for error in result.errors)

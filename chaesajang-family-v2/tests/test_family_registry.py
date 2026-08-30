@@ -38,6 +38,8 @@ def test_registry_exposes_validated_read_only_adapter_mapping(repo_root, load_re
     assert registry.adapters["claude"]["exclude"] == ("agents",)
     with pytest.raises(TypeError):
         registry.adapters["claude"] = {"exclude": ()}
+    with pytest.raises(TypeError):
+        registry.generated["dist"] = "other-dist"
 
 
 def test_registry_rejects_invalid_adapter_configuration(repo_root, load_registry, tmp_path):
@@ -45,12 +47,45 @@ def test_registry_rejects_invalid_adapter_configuration(repo_root, load_registry
     family.mkdir()
     (family / "chaesajang-core").mkdir()
     (family / "family.yaml").write_text(
-        "schema_version: 1\ncore: chaesajang-core\nskills: []\ngenerated: {}\n"
+        "schema_version: 1\ncore: chaesajang-core\nskills: []\n"
+        "generated: {compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}\n"
         "adapters:\n  claude:\n    exclude: not-a-list\n",
         encoding="utf-8",
     )
 
     with pytest.raises(ValueError, match="adapters"):
+        load_registry(family)
+
+
+@pytest.mark.parametrize(
+    "generated, core_files, codex_exclude",
+    [
+        ("{compatibility_snapshots: ../outside, dist: dist, experiments: experiments, package_extension: .skill}", "[]", "[]"),
+        ("{compatibility_snapshots: skills, dist: chaesajang-core/out, experiments: experiments, package_extension: .skill}", "[]", "[]"),
+        ("{compatibility_snapshots: skills, dist: dist, experiments: dist/cache, package_extension: .skill}", "[]", "[]"),
+        ("{compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: ../bad.skill}", "[]", "[]"),
+        ("{compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}", "[../escape.md]", "[]"),
+        ("{compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}", "[persona_core.md, persona_core.md]", "[]"),
+        ("{compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}", "[]", "[agents]"),
+    ],
+)
+def test_registry_rejects_unsafe_generated_core_and_codex_adapter_values(
+    load_registry, tmp_path, generated, core_files, codex_exclude
+):
+    family = tmp_path / "family"
+    (family / "chaesajang-core").mkdir(parents=True)
+    (family / "chaesajang-core" / "persona_core.md").write_text("core\n", encoding="utf-8")
+    (family / "alpha").mkdir()
+    (family / "family.yaml").write_text(
+        "schema_version: 1\ncore: chaesajang-core\n"
+        "skills:\n  - name: alpha\n    source: alpha\n"
+        f"    core_files: {core_files}\n    inject_gaze: false\n"
+        f"generated: {generated}\n"
+        f"adapters:\n  codex:\n    exclude: {codex_exclude}\n  claude:\n    exclude: []\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
         load_registry(family)
 
 

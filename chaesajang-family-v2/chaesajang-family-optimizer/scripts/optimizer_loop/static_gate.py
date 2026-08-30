@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import re
 import tempfile
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
 from .registry import FamilyRegistry, SkillSpec
-from .render import _generated_path, _path_from_source_root, _render_tree, _tree_hashes, package_skill
+from .render import _gaze_block, _path_from_source_root, _render_tree, _tree_hashes
 
 
-_REFERENCE_RE = re.compile(r"(?:\]\(|`)([^`\s)]+/[^`\s)]+\.md)(?:\)|`)")
+_REFERENCE_RE = re.compile(r"\]\(([^\s)]+/[^\s)]+\.md)\)")
+_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+_ZIP_MODE = 0o100644 << 16
 
 
 @dataclass(frozen=True)
@@ -45,29 +48,37 @@ def _source_skill(registry: FamilyRegistry, source_root: Path, skill: SkillSpec)
     return _path_from_source_root(registry, source_root, skill.source)
 
 
+def _single_marker_block(text: str) -> str | None:
+    begin, end = "<!-- CORE:gaze BEGIN -->", "<!-- CORE:gaze END -->"
+    if text.count(begin) != 1 or text.count(end) != 1:
+        return None
+    start = text.index(begin)
+    return text[start : text.index(end, start) + len(end)]
+
+
 def _check_source(registry: FamilyRegistry, source_root: Path, skill: SkillSpec, errors: list[str]) -> None:
     source = _source_skill(registry, source_root, skill)
     entrypoint = source / "SKILL.md"
+    entrypoint_text: str | None = None
     if not entrypoint.is_file():
         errors.append(f"{skill.name}: missing SKILL.md")
-        return
-    frontmatter, failure = _frontmatter(entrypoint)
-    if failure:
-        errors.append(f"{skill.name}: frontmatter: {failure}")
-    elif frontmatter.get("name") != skill.name:
-        errors.append(f"{skill.name}: name-directory mismatch")
-    for markdown in source.rglob("*.md"):
+    else:
+        entrypoint_text = entrypoint.read_text(encoding="utf-8")
+        frontmatter, failure = _frontmatter(entrypoint)
+        if failure:
+            errors.append(f"{skill.name}: frontmatter: {failure}")
+        elif frontmatter.get("name") != skill.name:
+            errors.append(f"{skill.name}: name-directory mismatch")
+    for markdown in source.rglob("*.md") if source.is_dir() else ():
         text = markdown.read_text(encoding="utf-8")
         for reference in _REFERENCE_RE.findall(text):
-            targets = ((markdown.parent / reference).resolve(), (source / reference).resolve())
-            contained = []
-            for target in targets:
-                try:
-                    target.relative_to(source.resolve())
-                except ValueError:
-                    continue
-                contained.append(target)
-            if not contained or not any(target.is_file() for target in contained):
+            target = (markdown.parent / reference).resolve()
+            try:
+                target.relative_to(source.resolve())
+            except ValueError:
+                errors.append(f"{skill.name}: broken relative reference {reference} in {markdown.name}")
+                continue
+            if not target.is_file():
                 errors.append(f"{skill.name}: broken relative reference {reference} in {markdown.name}")
     core = _path_from_source_root(registry, source_root, registry.core)
     for filename in skill.core_files:
@@ -75,71 +86,123 @@ def _check_source(registry: FamilyRegistry, source_root: Path, skill: SkillSpec,
         if not expected.is_file() or not actual.is_file() or expected.read_bytes() != actual.read_bytes():
             errors.append(f"{skill.name}: core drift for {filename}")
     if skill.inject_gaze:
-        text = entrypoint.read_text(encoding="utf-8")
+        text = entrypoint_text or ""
         begins, ends = text.count("<!-- CORE:gaze BEGIN -->"), text.count("<!-- CORE:gaze END -->")
         if begins > 1 or ends > 1:
             errors.append(f"{skill.name}: duplicate CORE:gaze marker")
         elif begins != 1 or ends != 1:
             errors.append(f"{skill.name}: missing CORE:gaze marker")
+        try:
+            expected_block = _gaze_block(core / "gaze_core.md")
+        except (OSError, ValueError) as error:
+            errors.append(f"{skill.name}: canonical gaze block is invalid: {error}")
+        else:
+            actual_block = _single_marker_block(text)
+            if actual_block is not None and actual_block != expected_block:
+                errors.append(f"{skill.name}: gaze content drift")
 
 
-def _zip_layout_ok(package: Path, skill_name: str) -> bool:
+def _expected_zip_bytes(skill_dir: Path) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for file_path in sorted(skill_dir.rglob("*"), key=lambda item: item.as_posix()):
+            if not file_path.is_file():
+                continue
+            name = f"{skill_dir.name}/{file_path.relative_to(skill_dir).as_posix()}"
+            info = zipfile.ZipInfo(name, _ZIP_TIMESTAMP)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = _ZIP_MODE
+            archive.writestr(info, file_path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+    return buffer.getvalue()
+
+
+def _validate_package(package: Path, skill: SkillSpec, expected: Path | None, errors: list[str]) -> None:
     try:
         with zipfile.ZipFile(package) as archive:
-            names = archive.namelist()
+            entries = archive.infolist()
+            names = [entry.filename for entry in entries]
+            expected_files = _tree_hashes(expected) if expected is not None else None
+            actual_files: dict[str, bytes] = {}
+            layout_valid = bool(entries)
+            metadata_valid = True
+            for entry in entries:
+                name = entry.filename
+                posix = PurePosixPath(name)
+                parts = posix.parts
+                raw_parts = name.split("/")
+                if (
+                    "\\" in name
+                    or name.startswith("/")
+                    or name.endswith("/")
+                    or posix.is_absolute()
+                    or len(parts) < 2
+                    or parts[0] != skill.name
+                    or any(part in {"", ".", ".."} for part in raw_parts)
+                ):
+                    layout_valid = False
+                if entry.date_time != _ZIP_TIMESTAMP or entry.compress_type != zipfile.ZIP_DEFLATED or entry.create_system != 3 or entry.external_attr != _ZIP_MODE:
+                    metadata_valid = False
+                if name in actual_files:
+                    layout_valid = False
+                else:
+                    actual_files[name] = archive.read(entry)
+            if names != sorted(names):
+                layout_valid = False
     except (OSError, zipfile.BadZipFile):
-        return False
-    prefix = f"{skill_name}/"
-    return bool(names) and names == sorted(names) and all(name.startswith(prefix) and name != prefix for name in names)
+        errors.append(f"{skill.name}: ZIP layout is invalid")
+        errors.append(f"{skill.name}: ZIP metadata is invalid")
+        errors.append(f"{skill.name}: ZIP content is invalid")
+        errors.append(f"{skill.name}: package hash mismatch")
+        return
+    if not layout_valid:
+        errors.append(f"{skill.name}: ZIP layout is invalid")
+    if not metadata_valid:
+        errors.append(f"{skill.name}: ZIP metadata is invalid")
+    if expected_files is None:
+        errors.append(f"{skill.name}: ZIP content cannot be compared without expected adapter")
+        errors.append(f"{skill.name}: package hash mismatch")
+        return
+    expected_payloads = {
+        f"{skill.name}/{relative}": (expected / relative).read_bytes()
+        for relative in expected_files
+    }
+    if actual_files != expected_payloads:
+        errors.append(f"{skill.name}: ZIP content is invalid")
+    if package.read_bytes() != _expected_zip_bytes(expected):
+        errors.append(f"{skill.name}: package hash mismatch")
 
 
 def run_static_gate(registry: FamilyRegistry, source_root: Path, dist_root: Path) -> GateResult:
-    """Return all detectable static errors; never stop after the first failure."""
+    """Return all independent static errors without short-circuiting."""
     source_root, dist_root = Path(source_root), Path(dist_root)
     errors: list[str] = []
     details: dict[str, object] = {"source_root": str(source_root), "dist_root": str(dist_root), "checked": []}
     for skill in registry.skills:
         _check_source(registry, source_root, skill, errors)
-    extension = registry.generated.get("package_extension", ".skill")
-    if not isinstance(extension, str):
-        errors.append("package extension is invalid")
-        extension = ".skill"
-    try:
-        snapshot_root = _generated_path(registry, source_root, "compatibility_snapshots")
-    except ValueError as error:
-        errors.append(str(error))
-        snapshot_root = source_root / "skills"
-    dist_root.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".static-gate-", dir=dist_root.parent) as temp:
+    snapshot_root = source_root.resolve() / registry.generated["compatibility_snapshots"]
+    extension = registry.generated["package_extension"]
+    with tempfile.TemporaryDirectory(prefix=".static-gate-") as temp:
         expected_root = Path(temp)
         for runtime in registry.adapters:
             for skill in registry.skills:
                 expected = expected_root / runtime / skill.name
+                render_failed = False
                 try:
                     _render_tree(registry, skill, source_root, expected, runtime)
                 except (OSError, ValueError) as error:
+                    render_failed = True
                     errors.append(f"{runtime}/{skill.name}: cannot render expected adapter: {error}")
-                    if runtime == "codex":
-                        snapshot = snapshot_root / f"{skill.name}.SKILL.md"
-                        entrypoint = _source_skill(registry, source_root, skill) / "SKILL.md"
-                        if not snapshot.is_file() or not entrypoint.is_file() or snapshot.read_bytes() != entrypoint.read_bytes():
-                            errors.append(f"{skill.name}: compatibility snapshot drift")
-                    continue
                 actual = dist_root / runtime / skill.name
-                if not actual.is_dir() or _tree_hashes(expected) != _tree_hashes(actual):
+                if render_failed or not actual.is_dir() or _tree_hashes(expected) != _tree_hashes(actual):
                     errors.append(f"{runtime}/{skill.name}: adapter drift")
                 if runtime == "codex":
                     snapshot = snapshot_root / f"{skill.name}.SKILL.md"
-                    if not snapshot.is_file() or snapshot.read_bytes() != (expected / "SKILL.md").read_bytes():
+                    if render_failed or not snapshot.is_file() or not (expected / "SKILL.md").is_file():
+                        errors.append(f"{skill.name}: compatibility snapshot drift")
+                    elif snapshot.read_bytes() != (expected / "SKILL.md").read_bytes():
                         errors.append(f"{skill.name}: compatibility snapshot drift")
                     package = dist_root / "packages" / f"{skill.name}{extension}"
-                    if not _zip_layout_ok(package, skill.name):
-                        errors.append(f"{skill.name}: ZIP layout is invalid")
-                    expected_package = expected_root / "packages" / f"{skill.name}{extension}"
-                    expected_package.parent.mkdir(parents=True, exist_ok=True)
-                    expected_hash = package_skill(expected, expected_package)
-                    actual_hash = hashlib.sha256(package.read_bytes()).hexdigest() if package.is_file() else None
-                    if actual_hash != expected_hash:
-                        errors.append(f"{skill.name}: package hash mismatch")
+                    _validate_package(package, skill, expected if not render_failed else None, errors)
                 details["checked"].append(f"{runtime}/{skill.name}")
     return GateResult(not errors, tuple(errors), details)
