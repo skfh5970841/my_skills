@@ -32,6 +32,28 @@ def test_registry_declares_exactly_five_managed_skills(repo_root, load_registry)
     }
 
 
+def test_registry_exposes_validated_read_only_adapter_mapping(repo_root, load_registry):
+    registry = load_registry(repo_root / "chaesajang-family-v2")
+
+    assert registry.adapters["claude"]["exclude"] == ("agents",)
+    with pytest.raises(TypeError):
+        registry.adapters["claude"] = {"exclude": ()}
+
+
+def test_registry_rejects_invalid_adapter_configuration(repo_root, load_registry, tmp_path):
+    family = tmp_path / "family"
+    family.mkdir()
+    (family / "chaesajang-core").mkdir()
+    (family / "family.yaml").write_text(
+        "schema_version: 1\ncore: chaesajang-core\nskills: []\ngenerated: {}\n"
+        "adapters:\n  claude:\n    exclude: not-a-list\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="adapters"):
+        load_registry(family)
+
+
 def test_optimizer_is_neutral_and_requires_approval(repo_root):
     text = (
         repo_root

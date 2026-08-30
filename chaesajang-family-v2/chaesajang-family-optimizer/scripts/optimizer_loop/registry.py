@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
 import yaml
 
 
 _TOP_LEVEL_KEYS = {"schema_version", "core", "skills", "generated", "adapters"}
 _SKILL_KEYS = {"name", "source", "core_files", "inject_gaze"}
+_ADAPTER_KEYS = {"exclude"}
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,9 @@ class FamilyRegistry:
     core: Path
     skills: tuple[SkillSpec, ...]
     generated: dict[str, Any]
+    adapters: Mapping[str, Mapping[str, tuple[str, ...]]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def canonical_paths(self) -> tuple[Path, ...]:
         return (self.core, *(skill.source for skill in self.skills))
@@ -72,6 +77,36 @@ def _skill_spec(root: Path, raw: object, names: set[str]) -> SkillSpec:
     return SkillSpec(name, source, tuple(core_files), inject_gaze)
 
 
+def _adapters(raw: object) -> Mapping[str, Mapping[str, tuple[str, ...]]]:
+    """Validate runtime adapter configuration and make it immutable."""
+    if not isinstance(raw, dict):
+        raise ValueError("adapters must be a mapping")
+    validated: dict[str, Mapping[str, tuple[str, ...]]] = {}
+    for runtime, config in raw.items():
+        if not isinstance(runtime, str) or not runtime:
+            raise ValueError("adapter runtime names must be non-empty strings")
+        if not isinstance(config, dict):
+            raise ValueError(f"adapters.{runtime} must be a mapping")
+        unknown = set(config) - _ADAPTER_KEYS
+        if unknown:
+            raise ValueError(f"unknown adapters.{runtime} keys: {sorted(unknown)}")
+        excluded = config.get("exclude", [])
+        if not isinstance(excluded, list) or not all(
+            isinstance(item, str) and item for item in excluded
+        ):
+            raise ValueError(f"adapters.{runtime}.exclude must be a list of strings")
+        normalized: list[str] = []
+        for item in excluded:
+            path = Path(item)
+            if path.is_absolute() or path.anchor or ".." in path.parts:
+                raise ValueError(f"adapters.{runtime} exclusion must be a safe relative path: {item}")
+            normalized.append(path.as_posix())
+        if len(set(normalized)) != len(normalized):
+            raise ValueError(f"adapters.{runtime}.exclude contains duplicates")
+        validated[runtime] = MappingProxyType({"exclude": tuple(normalized)})
+    return MappingProxyType(validated)
+
+
 def load_registry(root: Path) -> FamilyRegistry:
     """Load the canonical family registry rooted at *root*."""
     family_root = Path(root).resolve()
@@ -99,6 +134,5 @@ def load_registry(root: Path) -> FamilyRegistry:
     generated = data.get("generated")
     if not isinstance(generated, dict):
         raise ValueError("generated must be a mapping")
-    if not isinstance(data.get("adapters"), dict):
-        raise ValueError("adapters must be a mapping")
-    return FamilyRegistry(family_root, core, skills, generated)
+    adapters = _adapters(data.get("adapters"))
+    return FamilyRegistry(family_root, core, skills, generated, adapters)
