@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -29,6 +30,47 @@ def run_config(runner, tmp_path, command, *, expect_json=False, stdin_text=""):
         model="fake-model",
         reasoning="high",
         runtime="codex",
+        expect_json=expect_json,
+    )
+
+
+def generation_config(
+    runner,
+    source_root,
+    *,
+    model="fake-model",
+    reasoning="high",
+    runtime="codex",
+    timeout_seconds=5,
+    expect_json=False,
+):
+    root = Path(source_root).resolve(strict=True)
+    command = (
+        "codex",
+        "exec",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--sandbox",
+        "read-only",
+        "--color",
+        "never",
+        "--model",
+        model,
+        "--config",
+        f'model_reasoning_effort="{reasoning}"',
+        "--cd",
+        str(root),
+        "-",
+    )
+    return runner.RunConfig(
+        command=command,
+        cwd=root,
+        timeout_seconds=timeout_seconds,
+        stdin_text="must be replaced",
+        model=model,
+        reasoning=reasoning,
+        runtime=runtime,
         expect_json=expect_json,
     )
 
@@ -159,6 +201,8 @@ def test_run_command_uses_argv_without_a_shell_and_monotonic_elapsed(
         "capture_output": True,
         "timeout": 5,
         "shell": False,
+        "encoding": "utf-8",
+        "errors": "replace",
     }
     assert result.status == "completed"
     assert result.elapsed_ms == 123
@@ -205,15 +249,16 @@ def test_timeout_is_blocked_and_preserves_available_streams(
 
 def test_generation_prompt_uses_only_generator_facing_case_data(tmp_path, loop_modules):
     generate, _ = loop_modules
-    skill = make_skill(tmp_path)
+    make_skill(tmp_path)
     case = eval_case()
 
-    prompt = generate.build_generation_prompt(case, skill / "SKILL.md")
+    prompt = generate.build_generation_prompt(case, Path("alpha") / "SKILL.md")
 
     assert case["case_id"] in prompt
     assert case["target_skill"] in prompt
     assert case["generator_brief"] in prompt
-    assert str(skill / "SKILL.md") in prompt
+    assert "alpha/SKILL.md" in prompt
+    assert "alpha\\SKILL.md" not in prompt
     assert "only the local references that SKILL.md requires" in prompt
     assert "Do not make any file changes" in prompt
     assert "Return only the requested response" in prompt
@@ -223,6 +268,44 @@ def test_generation_prompt_uses_only_generator_facing_case_data(tmp_path, loop_m
     assert case["axes"][0] not in prompt
 
 
+def test_baseline_and_candidate_use_identical_logical_prompt_bytes(
+    tmp_path, loop_modules, monkeypatch
+):
+    generate, runner = loop_modules
+    baseline_root = tmp_path / "baseline-source"
+    candidate_root = tmp_path / "candidate-source"
+    make_skill(baseline_root)
+    make_skill(candidate_root)
+    received = []
+
+    def fake_run(config):
+        received.append(config)
+        return runner.RunResult("completed", 0, "answer", "", 1)
+
+    monkeypatch.setattr(generate, "run_command", fake_run)
+    baseline = generate.generate_cases(
+        [eval_case()],
+        baseline_root,
+        generation_config(runner, baseline_root),
+        repeats=1,
+    )[0]
+    candidate = generate.generate_cases(
+        [eval_case()],
+        candidate_root,
+        generation_config(runner, candidate_root),
+        repeats=1,
+    )[0]
+
+    assert baseline["prompt"].encode("utf-8") == candidate["prompt"].encode("utf-8")
+    assert received[0].stdin_text.encode("utf-8") == received[1].stdin_text.encode("utf-8")
+    assert baseline["prompt"] == received[0].stdin_text
+    assert candidate["prompt"] == received[1].stdin_text
+    assert "alpha/SKILL.md" in baseline["prompt"]
+    assert str(baseline_root.resolve()) not in baseline["prompt"]
+    assert str(candidate_root.resolve()) not in candidate["prompt"]
+    assert "candidate" not in candidate["prompt"].casefold()
+
+
 def test_generation_records_order_repeats_settings_and_provenance(
     tmp_path, loop_modules, monkeypatch
 ):
@@ -230,12 +313,7 @@ def test_generation_records_order_repeats_settings_and_provenance(
     make_skill(tmp_path, "alpha")
     make_skill(tmp_path, "beta")
     cases = (eval_case("b", "beta"), eval_case("a", "alpha"))
-    config = run_config(
-        runner,
-        tmp_path,
-        ("codex", "exec", "--model", "fake-model", "-"),
-        stdin_text="must be replaced",
-    )
+    config = generation_config(runner, tmp_path)
     received = []
 
     def fake_run(per_case_config):
@@ -255,6 +333,9 @@ def test_generation_records_order_repeats_settings_and_provenance(
     assert all(row["reasoning"] == config.reasoning for row in rows)
     assert all(row["runtime"] == config.runtime for row in rows)
     assert all(row["command"] == list(config.command) for row in rows)
+    assert all(row["cwd"] == str(tmp_path.resolve()) for row in rows)
+    assert all(row["source_root"] == str(tmp_path.resolve()) for row in rows)
+    assert all(row["timeout_seconds"] == config.timeout_seconds for row in rows)
     assert [row["output"] for row in rows] == ["answer-1", "answer-2", "answer-3", "answer-4"]
     assert all(row["stderr"] == "raw warning" for row in rows)
     assert all(row["elapsed_ms"] == 17 for row in rows)
@@ -273,6 +354,9 @@ def test_generation_records_order_repeats_settings_and_provenance(
         "references/guide.md": rows[0]["source_snapshot"]["references/guide.md"],
     }
     assert rows[2]["source_snapshot"] == rows[3]["source_snapshot"]
+    assert all(row["source_snapshot_after"] == row["source_snapshot"] for row in rows)
+    assert all(row["source_stable"] is True for row in rows)
+    assert all("invalid_reason" not in row for row in rows)
     for row in rows:
         timestamp = datetime.fromisoformat(row["started_at"])
         assert timestamp.tzinfo is not None
@@ -288,7 +372,7 @@ def test_source_snapshot_changes_with_any_regular_skill_file(
 ):
     generate, runner = loop_modules
     skill = make_skill(tmp_path)
-    config = run_config(runner, tmp_path, ("codex", "exec", "-"))
+    config = generation_config(runner, tmp_path)
     monkeypatch.setattr(
         generate,
         "run_command",
@@ -308,20 +392,37 @@ def test_source_snapshot_changes_with_any_regular_skill_file(
     assert list(after["source_snapshot"]) == sorted(after["source_snapshot"])
 
 
+def test_generation_binds_cwd_command_and_plain_text_mode_before_running(
+    tmp_path, loop_modules, monkeypatch
+):
+    generate, runner = loop_modules
+    make_skill(tmp_path)
+    other_root = tmp_path / "other-root"
+    other_root.mkdir()
+    valid = generation_config(runner, tmp_path)
+    invalid_configs = (
+        replace(valid, cwd=other_root),
+        replace(valid, command=("codex", "exec", "-")),
+        replace(valid, command=("claude", *valid.command[1:])),
+        replace(valid, expect_json=True),
+    )
+    monkeypatch.setattr(
+        generate,
+        "run_command",
+        lambda _config: pytest.fail("invalid generation config must not execute"),
+    )
+
+    for config in invalid_configs:
+        with pytest.raises(ValueError):
+            generate.generate_cases([eval_case()], tmp_path, config, repeats=1)
+
+
 def test_generation_rejects_non_codex_runtime_before_running(
     tmp_path, loop_modules, monkeypatch
 ):
     generate, runner = loop_modules
     make_skill(tmp_path)
-    config = runner.RunConfig(
-        command=("claude", "-p"),
-        cwd=tmp_path,
-        timeout_seconds=5,
-        stdin_text="",
-        model="fake-model",
-        reasoning="high",
-        runtime="claude",
-    )
+    config = generation_config(runner, tmp_path, runtime="claude")
     monkeypatch.setattr(
         generate,
         "run_command",
@@ -330,6 +431,94 @@ def test_generation_rejects_non_codex_runtime_before_running(
 
     with pytest.raises(ValueError, match="runtime.*codex"):
         generate.generate_cases([eval_case()], tmp_path, config, repeats=1)
+
+
+def test_generation_marks_source_mutation_invalid_and_stops_repeats(
+    tmp_path, loop_modules, monkeypatch
+):
+    generate, runner = loop_modules
+    skill = make_skill(tmp_path)
+    calls = []
+
+    def mutate_during_run(config):
+        calls.append(config)
+        (skill / "references" / "guide.md").write_text(
+            "mutated during generation\n", encoding="utf-8"
+        )
+        return runner.RunResult("completed", 0, "raw generated answer", "warning", 9)
+
+    monkeypatch.setattr(generate, "run_command", mutate_during_run)
+    rows = generate.generate_cases(
+        [eval_case()], tmp_path, generation_config(runner, tmp_path), repeats=3
+    )
+
+    assert len(calls) == len(rows) == 1
+    row = rows[0]
+    assert row["output"] == "raw generated answer"
+    assert row["stderr"] == "warning"
+    assert row["returncode"] == 0
+    assert row["status"] == "invalid"
+    assert row["source_stable"] is False
+    assert row["source_snapshot"] != row["source_snapshot_after"]
+    assert "changed during generation" in row["invalid_reason"]
+
+
+def test_generation_marks_post_run_snapshot_failure_invalid(
+    tmp_path, loop_modules, monkeypatch
+):
+    generate, runner = loop_modules
+    make_skill(tmp_path)
+    command_finished = False
+    original_snapshot = generate._skill_snapshot
+
+    def snapshot(skill):
+        if command_finished:
+            raise ValueError("injected post-read failure")
+        return original_snapshot(skill)
+
+    def fake_run(_config):
+        nonlocal command_finished
+        command_finished = True
+        return runner.RunResult("completed", 0, "preserved output", "", 4)
+
+    monkeypatch.setattr(generate, "_skill_snapshot", snapshot)
+    monkeypatch.setattr(generate, "run_command", fake_run)
+    rows = generate.generate_cases(
+        [eval_case()], tmp_path, generation_config(runner, tmp_path), repeats=2
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["output"] == "preserved output"
+    assert rows[0]["status"] == "invalid"
+    assert rows[0]["source_snapshot_after"] is None
+    assert rows[0]["source_stable"] is False
+    assert "post-run source snapshot failed" in rows[0]["invalid_reason"]
+    assert "injected post-read failure" in rows[0]["invalid_reason"]
+
+
+def test_generation_normalizes_pre_run_file_read_errors(
+    tmp_path, loop_modules, monkeypatch
+):
+    generate, runner = loop_modules
+    make_skill(tmp_path)
+    original_read_bytes = Path.read_bytes
+
+    def fail_guide(self):
+        if self.name == "guide.md":
+            raise OSError("injected source read failure")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_guide)
+    monkeypatch.setattr(
+        generate,
+        "run_command",
+        lambda _config: pytest.fail("pre-run source read failure must not execute"),
+    )
+
+    with pytest.raises(ValueError, match="inaccessible"):
+        generate.generate_cases(
+            [eval_case()], tmp_path, generation_config(runner, tmp_path), repeats=1
+        )
 
 
 def test_generation_rejects_incomplete_snapshot_when_directory_walk_fails(
@@ -354,7 +543,7 @@ def test_generation_rejects_incomplete_snapshot_when_directory_walk_fails(
         generate.generate_cases(
             [eval_case()],
             tmp_path,
-            run_config(runner, tmp_path, ("codex", "exec", "-")),
+            generation_config(runner, tmp_path),
             repeats=1,
         )
 
@@ -375,7 +564,7 @@ def test_generation_rejects_invalid_repeats_before_running(
         generate.generate_cases(
             [eval_case()],
             tmp_path,
-            run_config(runner, tmp_path, ("codex", "exec", "-")),
+            generation_config(runner, tmp_path),
             repeats=repeats,
         )
 
@@ -405,7 +594,7 @@ def test_generation_rejects_malformed_or_repeated_cases_before_running(
         generate.generate_cases(
             cases,
             tmp_path,
-            run_config(runner, tmp_path, ("codex", "exec", "-")),
+            generation_config(runner, tmp_path),
             repeats=1,
         )
 
@@ -432,7 +621,7 @@ def test_generation_rejects_target_path_traversal(
         generate.generate_cases(
             [eval_case(target_skill=target_skill)],
             tmp_path,
-            run_config(runner, tmp_path, ("codex", "exec", "-")),
+            generation_config(runner, tmp_path),
             repeats=1,
         )
 
@@ -455,6 +644,6 @@ def test_generation_rejects_source_symlinks(tmp_path, loop_modules, monkeypatch)
         generate.generate_cases(
             [eval_case()],
             tmp_path,
-            run_config(runner, tmp_path, ("codex", "exec", "-")),
+            generation_config(runner, tmp_path),
             repeats=1,
         )

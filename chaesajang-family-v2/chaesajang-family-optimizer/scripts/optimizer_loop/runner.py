@@ -87,6 +87,8 @@ def run_command(config: RunConfig) -> RunResult:
             capture_output=True,
             timeout=config.timeout_seconds,
             shell=False,
+            encoding="utf-8",
+            errors="replace",
         )
     except subprocess.TimeoutExpired as error:
         return RunResult(
