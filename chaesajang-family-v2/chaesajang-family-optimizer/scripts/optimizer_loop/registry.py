@@ -57,7 +57,7 @@ def _contained_directory(root: Path, raw_path: object, label: str) -> Path:
 def _safe_posix_relative(raw: object, label: str) -> str:
     if not isinstance(raw, str) or not raw:
         raise ValueError(f"{label} must be a non-empty relative POSIX path")
-    if "\\" in raw:
+    if "\\" in raw or ":" in raw:
         raise ValueError(f"{label} must use POSIX separators")
     path = PurePosixPath(raw)
     if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
@@ -175,6 +175,7 @@ def _generated(root: Path, raw: object, canonical: tuple[Path, ...]) -> Mapping[
         or len(extension) == 1
         or "/" in extension
         or "\\" in extension
+        or ":" in extension
         or ".." in extension
     ):
         raise ValueError("generated.package_extension must be one safe dot-prefixed extension")

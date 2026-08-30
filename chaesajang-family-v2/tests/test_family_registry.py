@@ -67,6 +67,13 @@ def test_registry_rejects_invalid_adapter_configuration(repo_root, load_registry
         ("{compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}", "[../escape.md]", "[]"),
         ("{compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}", "[persona_core.md, persona_core.md]", "[]"),
         ("{compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}", "[]", "[agents]"),
+        ("{compatibility_snapshots: C:/victim, dist: dist, experiments: experiments, package_extension: .skill}", "[]", "[]"),
+        ("{compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill:stream}", "[]", "[]"),
+        ("{compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}", "[C:/victim]", "[]"),
+        ("{compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}", "[]", "[C:/victim]"),
+        ("{compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}", "[]", "[C:\\victim]"),
+        ("{compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}", "[]", "[//server/share]"),
+        ("{compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}", "[]", "[:stream]"),
     ],
 )
 def test_registry_rejects_unsafe_generated_core_and_codex_adapter_values(

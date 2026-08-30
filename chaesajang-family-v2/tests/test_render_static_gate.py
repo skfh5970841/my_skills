@@ -1,6 +1,7 @@
 import hashlib
 import os
 import shutil
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -78,6 +79,18 @@ def registry_factory(tmp_path, loop_modules):
 def real_registry(loop_modules):
     load_registry, *_ = loop_modules
     return load_registry(Path(__file__).resolve().parents[1])
+
+
+def make_static_fixture_valid(registry):
+    """Synchronize fixture-derived source copies before expecting a clean gate."""
+    (registry.root / "alpha" / "references" / "persona_core.md").write_text(
+        "canonical persona\n", encoding="utf-8"
+    )
+    alpha = registry.root / "alpha" / "SKILL.md"
+    alpha.write_text(
+        alpha.read_text(encoding="utf-8").replace("stale gaze", "canonical gaze"),
+        encoding="utf-8",
+    )
 
 
 def test_claude_adapter_excludes_agents_directory(tmp_path, real_registry, loop_modules):
@@ -231,7 +244,8 @@ def test_static_gate_uses_document_relative_links_without_source_root_fallback(t
     _, _, render_all, _, run_static_gate = loop_modules
     dist = tmp_path / "dist"
     render_all(registry, registry.root, dist)
-    (registry.root / "alpha" / "references" / "nested.md").write_text(
+    (registry.root / "alpha" / "nested").mkdir()
+    (registry.root / "alpha" / "nested" / "nested.md").write_text(
         "[wrong from nested](references/persona_core.md)\n", encoding="utf-8"
     )
 
@@ -306,3 +320,124 @@ def test_static_gate_does_not_self_validate_a_broken_packager(tmp_path, registry
     result = run_static_gate(registry, registry.root, dist)
 
     assert any("package hash mismatch" in error for error in result.errors)
+
+
+def test_publication_cleanup_failure_warns_but_keeps_new_outputs(tmp_path, registry_factory, loop_modules, monkeypatch):
+    registry = registry_factory()
+    _, _, render_all, _, _ = loop_modules
+    import optimizer_loop.render as render_module
+
+    dist = tmp_path / "dist"
+    snapshots = registry.root / "skills"
+    dist.mkdir()
+    snapshots.mkdir()
+    (dist / "old.txt").write_text("old\n", encoding="utf-8")
+    (snapshots / "old.SKILL.md").write_text("old\n", encoding="utf-8")
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    original_rmtree = shutil.rmtree
+    failed = False
+
+    def fail_first_backup(path, *args, **kwargs):
+        nonlocal failed
+        if ".backup-" in Path(path).name and not failed:
+            failed = True
+            raise OSError("injected cleanup failure")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(render_module.shutil, "rmtree", fail_first_backup)
+    with pytest.warns(RuntimeWarning, match="retained backup"):
+        render_all(registry, registry.root, dist)
+
+    assert (dist / "codex" / "alpha" / "SKILL.md").is_file()
+    assert (snapshots / "alpha.SKILL.md").is_file()
+    assert outside.read_text(encoding="utf-8") == "outside\n"
+    assert list(tmp_path.glob(".*.backup-*"))
+
+
+def test_static_gate_resolves_backtick_same_directory_parent_and_anchor_references(tmp_path, registry_factory, loop_modules):
+    registry = registry_factory()
+    _, _, render_all, _, run_static_gate = loop_modules
+    import optimizer_loop.static_gate as gate_module
+
+    make_static_fixture_valid(registry)
+    root = registry.root / "alpha"
+    (root / "same.md").write_text("same\n", encoding="utf-8")
+    (root / "nested").mkdir()
+    (root / "nested" / "nested.md").write_text(
+        "`../same.md#part` and [core](../references/persona_core.md#part)\n",
+        encoding="utf-8",
+    )
+    skill = root / "SKILL.md"
+    skill.write_text(
+        skill.read_text(encoding="utf-8")
+        + "\n`references/persona_core.md#anchor` `same.md#anchor` [same](same.md#anchor)"
+        + " [web](https://example.com/a.md) [anchor](#local) [other](image.png)\n",
+        encoding="utf-8",
+    )
+    assert "same.md" in gate_module._local_markdown_references(skill, root)
+    dist = tmp_path / "dist"
+    render_all(registry, registry.root, dist)
+
+    result = run_static_gate(registry, registry.root, dist)
+
+    assert result.passed, result.errors
+
+
+def test_static_gate_reports_invalid_backtick_and_markdown_relative_references(tmp_path, registry_factory, loop_modules):
+    registry = registry_factory()
+    _, _, render_all, _, run_static_gate = loop_modules
+    make_static_fixture_valid(registry)
+    root = registry.root / "alpha"
+    (root / "nested").mkdir()
+    (root / "nested" / "nested.md").write_text("[missing](../absent.md#x)\n", encoding="utf-8")
+    skill = root / "SKILL.md"
+    skill.write_text(skill.read_text(encoding="utf-8") + "\n`./missing.md#anchor`\n", encoding="utf-8")
+    dist = tmp_path / "dist"
+    render_all(registry, registry.root, dist)
+
+    result = run_static_gate(registry, registry.root, dist)
+
+    assert any("./missing.md" in error for error in result.errors)
+    assert any("../absent.md" in error for error in result.errors)
+
+
+def test_static_gate_independently_detects_codex_canonical_file_omission(tmp_path, registry_factory, loop_modules, monkeypatch):
+    registry = registry_factory()
+    _, _, render_all, _, run_static_gate = loop_modules
+    import optimizer_loop.render as render_module
+
+    make_static_fixture_valid(registry)
+    dist = tmp_path / "dist"
+    render_all(registry, registry.root, dist)
+    assert run_static_gate(registry, registry.root, dist).passed
+    original_render_tree = render_module._render_tree
+
+    def omit_codex_agent(registry, skill, source_root, destination, runtime):
+        result = original_render_tree(registry, skill, source_root, destination, runtime)
+        if runtime == "codex" and skill.name == "alpha":
+            (destination / "agents" / "openai.yaml").unlink()
+        return result
+
+    monkeypatch.setattr(render_module, "_render_tree", omit_codex_agent)
+    render_all(registry, registry.root, dist)
+    result = run_static_gate(registry, registry.root, dist)
+
+    assert any("Codex contract missing canonical file agents/openai.yaml" in error for error in result.errors)
+
+
+def test_sync_wrapper_regenerates_only_declared_outputs(real_registry, loop_modules):
+    from optimizer_loop.snapshot import snapshot_registry
+
+    before = snapshot_registry(real_registry)
+    root = real_registry.root
+    wrapper = root / "sync_core.py"
+
+    write = subprocess.run([sys.executable, str(wrapper)], cwd=root, capture_output=True, text=True)
+    check = subprocess.run(
+        [sys.executable, str(wrapper), "--check"], cwd=root, capture_output=True, text=True
+    )
+
+    assert write.returncode == 0, write.stderr
+    assert check.returncode == 0, check.stdout + check.stderr
+    assert snapshot_registry(real_registry) == before

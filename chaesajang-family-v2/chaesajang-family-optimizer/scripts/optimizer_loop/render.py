@@ -7,6 +7,7 @@ import os
 import shutil
 import tempfile
 import uuid
+import warnings
 import zipfile
 from pathlib import Path
 
@@ -133,7 +134,14 @@ def _publish_directories(replacements: list[tuple[Path, Path]]) -> None:
         raise
     for _, backup in backups:
         if backup.exists():
-            shutil.rmtree(backup)
+            try:
+                shutil.rmtree(backup)
+            except OSError as error:
+                warnings.warn(
+                    f"retained backup after committed publication: {backup} ({error})",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
 
 def render_skill(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import re
 import tempfile
 import zipfile
@@ -16,7 +17,8 @@ from .registry import FamilyRegistry, SkillSpec
 from .render import _gaze_block, _path_from_source_root, _render_tree, _tree_hashes
 
 
-_REFERENCE_RE = re.compile(r"\]\(([^\s)]+/[^\s)]+\.md)\)")
+_MARKDOWN_REFERENCE_RE = re.compile(r"\]\(([^\s)]+)\)")
+_BACKTICK_REFERENCE_RE = re.compile(r"`([^`\s]+)`")
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _ZIP_MODE = 0o100644 << 16
 
@@ -56,6 +58,88 @@ def _single_marker_block(text: str) -> str | None:
     return text[start : text.index(end, start) + len(end)]
 
 
+def _local_markdown_references(markdown: Path, source: Path) -> tuple[str, ...]:
+    """Find local .md links/backticks and keep their document-relative spelling."""
+    text = markdown.read_text(encoding="utf-8")
+    local: list[str] = []
+
+    def normalized(candidate: str) -> str | None:
+        path = candidate.split("#", 1)[0]
+        if not path or path.startswith(("http://", "https://")) or not path.endswith(".md"):
+            return None
+        return path
+
+    for candidate in _MARKDOWN_REFERENCE_RE.findall(text):
+        if path := normalized(candidate):
+            local.append(path)
+    for candidate in _BACKTICK_REFERENCE_RE.findall(text):
+        if not (path := normalized(candidate)):
+            continue
+        target = markdown.parent / path
+        # Bare code spans are often filename terminology rather than link syntax.
+        # Treat unambiguous paths and existing same-directory files as references.
+        if path.startswith(("./", "../")) or "/" in path or target.is_file():
+            local.append(path)
+    return tuple(local)
+
+
+def _replace_gaze_contract(text: str, block: str) -> str:
+    begin, end = "<!-- CORE:gaze BEGIN -->", "<!-- CORE:gaze END -->"
+    if text.count(begin) != 1 or text.count(end) != 1:
+        raise ValueError("SKILL.md does not contain one CORE:gaze marker block")
+    start = text.index(begin)
+    finish = text.index(end, start) + len(end)
+    return text[:start] + block + text[finish:]
+
+
+def _codex_contract(registry: FamilyRegistry, source_root: Path, skill: SkillSpec) -> dict[str, bytes]:
+    """Build Codex bytes directly from canonical sources, never via renderer code."""
+    source = _source_skill(registry, source_root, skill)
+    if not source.is_dir():
+        raise ValueError("canonical skill source is missing")
+    contract = {
+        path.relative_to(source).as_posix(): path.read_bytes()
+        for path in source.rglob("*")
+        if path.is_file()
+    }
+    core = _path_from_source_root(registry, source_root, registry.core)
+    for filename in skill.core_files:
+        source_file = core / filename
+        if not source_file.is_file():
+            raise ValueError(f"declared core file is missing: {filename}")
+        contract[f"references/{filename}"] = source_file.read_bytes()
+    if skill.inject_gaze:
+        entrypoint = contract.get("SKILL.md")
+        if entrypoint is None:
+            raise ValueError("SKILL.md is missing")
+        entrypoint_text = entrypoint.decode("utf-8").replace("\r\n", "\n")
+        rendered = _replace_gaze_contract(entrypoint_text, _gaze_block(core / "gaze_core.md"))
+        contract["SKILL.md"] = rendered.replace("\n", os.linesep).encode("utf-8")
+    return contract
+
+
+def _check_codex_contract(
+    registry: FamilyRegistry, source_root: Path, skill: SkillSpec, actual: Path, errors: list[str]
+) -> None:
+    try:
+        expected = _codex_contract(registry, source_root, skill)
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        errors.append(f"{skill.name}: Codex contract cannot build: {error}")
+        return
+    actual_files = {
+        path.relative_to(actual).as_posix(): path.read_bytes()
+        for path in actual.rglob("*")
+        if path.is_file()
+    } if actual.is_dir() else {}
+    for relative in sorted(set(expected) - set(actual_files)):
+        errors.append(f"{skill.name}: Codex contract missing canonical file {relative}")
+    for relative in sorted(set(actual_files) - set(expected)):
+        errors.append(f"{skill.name}: Codex contract has unexpected file {relative}")
+    for relative in sorted(set(expected) & set(actual_files)):
+        if expected[relative] != actual_files[relative]:
+            errors.append(f"{skill.name}: Codex contract content drift {relative}")
+
+
 def _check_source(registry: FamilyRegistry, source_root: Path, skill: SkillSpec, errors: list[str]) -> None:
     source = _source_skill(registry, source_root, skill)
     entrypoint = source / "SKILL.md"
@@ -70,8 +154,9 @@ def _check_source(registry: FamilyRegistry, source_root: Path, skill: SkillSpec,
         elif frontmatter.get("name") != skill.name:
             errors.append(f"{skill.name}: name-directory mismatch")
     for markdown in source.rglob("*.md") if source.is_dir() else ():
-        text = markdown.read_text(encoding="utf-8")
-        for reference in _REFERENCE_RE.findall(text):
+        if markdown.relative_to(source).parts[:1] == ("references",):
+            continue
+        for reference in _local_markdown_references(markdown, source):
             target = (markdown.parent / reference).resolve()
             try:
                 target.relative_to(source.resolve())
@@ -197,6 +282,7 @@ def run_static_gate(registry: FamilyRegistry, source_root: Path, dist_root: Path
                 if render_failed or not actual.is_dir() or _tree_hashes(expected) != _tree_hashes(actual):
                     errors.append(f"{runtime}/{skill.name}: adapter drift")
                 if runtime == "codex":
+                    _check_codex_contract(registry, source_root, skill, actual, errors)
                     snapshot = snapshot_root / f"{skill.name}.SKILL.md"
                     if render_failed or not snapshot.is_file() or not (expected / "SKILL.md").is_file():
                         errors.append(f"{skill.name}: compatibility snapshot drift")
