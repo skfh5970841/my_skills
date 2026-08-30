@@ -11,13 +11,18 @@ import warnings
 import zipfile
 from pathlib import Path
 
-from .registry import FamilyRegistry, SkillSpec
+from .registry import FamilyRegistry, SkillSpec, _RUNTIME_ADAPTERS
 
 
 _GAZE_BEGIN = "<!-- CORE:gaze BEGIN -->"
 _GAZE_END = "<!-- CORE:gaze END -->"
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _ZIP_MODE = 0o100644 << 16
+
+
+def _validate_runtime(registry: FamilyRegistry, runtime: object) -> None:
+    if runtime not in _RUNTIME_ADAPTERS or runtime not in registry.adapters:
+        raise ValueError(f"unknown runtime adapter: {runtime}")
 
 
 def _path_from_source_root(registry: FamilyRegistry, source_root: Path, canonical: Path) -> Path:
@@ -80,8 +85,7 @@ def _render_tree(
     destination: Path,
     runtime: str,
 ) -> dict[str, str]:
-    if runtime not in registry.adapters:
-        raise ValueError(f"unknown runtime adapter: {runtime}")
+    _validate_runtime(registry, runtime)
     source = _path_from_source_root(registry, source_root, skill.source)
     if not source.is_dir():
         raise ValueError(f"missing canonical skill source: {source}")
@@ -152,6 +156,7 @@ def render_skill(
     runtime: str,
 ) -> dict[str, str]:
     """Render one registry skill for *runtime* without partial publication."""
+    _validate_runtime(registry, runtime)
     destination = Path(destination)
     _validate_publish_destination(registry, Path(source_root), destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -205,6 +210,8 @@ def _generated_path(registry: FamilyRegistry, source_root: Path, key: str) -> Pa
 def render_all(registry: FamilyRegistry, source_root: Path, dist_root: Path) -> dict[str, dict[str, str]]:
     """Render all adapters/packages/snapshots to staging, then publish as one transaction."""
     source_root, dist_root = Path(source_root), Path(dist_root)
+    for runtime in registry.adapters:
+        _validate_runtime(registry, runtime)
     snapshot_root = _generated_path(registry, source_root, "compatibility_snapshots")
     extension = registry.generated["package_extension"]
     _validate_publish_destination(registry, source_root, dist_root)

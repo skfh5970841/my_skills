@@ -4,7 +4,9 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -122,6 +124,46 @@ def test_renderer_rejects_missing_or_duplicate_gaze_markers(tmp_path, registry_f
     )
     with pytest.raises(ValueError, match="CORE:gaze"):
         render_skill(registry, alpha, registry.root, tmp_path / "rendered" / "alpha", "codex")
+
+
+def forged_runtime_registry(registry):
+    return replace(
+        registry,
+        adapters=MappingProxyType({"../escape": MappingProxyType({"exclude": ()})}),
+    )
+
+
+def test_render_skill_rejects_unsafe_runtime_before_creating_output(tmp_path, registry_factory, loop_modules):
+    registry = registry_factory()
+    _, _, _, render_skill, _ = loop_modules
+    registry = forged_runtime_registry(registry)
+    alpha = next(skill for skill in registry.skills if skill.name == "alpha")
+    rendered = tmp_path / "rendered" / "alpha"
+
+    with pytest.raises(ValueError, match="runtime"):
+        render_skill(registry, alpha, registry.root, rendered, "../escape")
+    assert not rendered.parent.exists()
+
+
+def test_internal_renderer_rejects_unsafe_runtime_before_creating_output(tmp_path, registry_factory, loop_modules):
+    registry = forged_runtime_registry(registry_factory())
+    import optimizer_loop.render as render_module
+
+    alpha = next(skill for skill in registry.skills if skill.name == "alpha")
+    internal = tmp_path / "internal" / "alpha"
+    with pytest.raises(ValueError, match="runtime"):
+        render_module._render_tree(registry, alpha, registry.root, internal, "../escape")
+    assert not internal.parent.exists()
+
+
+def test_render_all_rejects_forged_runtime_before_building_outputs(tmp_path, registry_factory, loop_modules):
+    registry = forged_runtime_registry(registry_factory())
+    _, _, render_all, _, _ = loop_modules
+    dist = tmp_path / "dist"
+    with pytest.raises(ValueError, match="runtime"):
+        render_all(registry, registry.root, dist)
+    assert not dist.exists()
+    assert not (registry.root / "skills").exists()
 
 
 def test_packages_have_stable_hashes_sorted_top_level_and_timestamps(tmp_path, registry_factory, loop_modules):
@@ -400,6 +442,42 @@ def test_static_gate_reports_invalid_backtick_and_markdown_relative_references(t
 
     assert any("./missing.md" in error for error in result.errors)
     assert any("../absent.md" in error for error in result.errors)
+
+
+def test_static_gate_checks_reference_tree_links_without_false_positives(tmp_path, registry_factory, loop_modules):
+    registry = registry_factory(tmp_path / "family")
+    _, _, render_all, _, run_static_gate = loop_modules
+    make_static_fixture_valid(registry)
+    references = registry.root / "alpha" / "references"
+    (references / "valid.md").write_text(
+        "[standard](persona_core.md) `./persona_core.md` `references/persona_core.md` "
+        "and `cross-role-only.md`\n",
+        encoding="utf-8",
+    )
+    dist = tmp_path / "dist"
+    render_all(registry, registry.root, dist)
+
+    valid = run_static_gate(registry, registry.root, dist)
+    assert valid.passed, valid.errors
+
+    for filename in ("standard-outside.md", "backtick-outside.md", "root-outside.md"):
+        (registry.root / filename).write_text("outside skill root\n", encoding="utf-8")
+    (references / "broken.md").write_text(
+        "[missing](missing.md) and `./also-missing.md` and `references/missing-root.md`\n"
+        "[outside](../../standard-outside.md) `../../backtick-outside.md` "
+        "`references/../../root-outside.md`\n",
+        encoding="utf-8",
+    )
+    render_all(registry, registry.root, dist)
+    broken = run_static_gate(registry, registry.root, dist)
+
+    assert "alpha: broken relative reference missing.md in broken.md" in broken.errors
+    assert "alpha: broken relative reference ./also-missing.md in broken.md" in broken.errors
+    assert "alpha: broken relative reference references/missing-root.md in broken.md" in broken.errors
+    assert "alpha: broken relative reference ../../standard-outside.md in broken.md" in broken.errors
+    assert "alpha: broken relative reference ../../backtick-outside.md in broken.md" in broken.errors
+    assert "alpha: broken relative reference references/../../root-outside.md in broken.md" in broken.errors
+    assert not any("cross-role-only.md" in error for error in broken.errors)
 
 
 def test_static_gate_independently_detects_codex_canonical_file_omission(tmp_path, registry_factory, loop_modules, monkeypatch):

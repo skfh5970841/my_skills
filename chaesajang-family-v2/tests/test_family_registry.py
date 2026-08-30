@@ -58,6 +58,83 @@ def test_registry_rejects_invalid_adapter_configuration(repo_root, load_registry
 
 
 @pytest.mark.parametrize(
+    "name",
+    [
+        "../escape",
+        "slash/name",
+        r"back\slash",
+        "C:/drive",
+        "UPPERCASE",
+        "under_score",
+        "dot.name",
+        "한글",
+        "-leading",
+        "trailing-",
+        "double--hyphen",
+        "a" * 65,
+    ],
+)
+def test_registry_rejects_unsafe_or_nonstandard_skill_names(load_registry, tmp_path, name):
+    family = tmp_path / "family"
+    (family / "chaesajang-core").mkdir(parents=True)
+    (family / "alpha").mkdir()
+    (family / "family.yaml").write_text(
+        "schema_version: 1\ncore: chaesajang-core\n"
+        "skills:\n"
+        f"  - name: {name}\n    source: alpha\n    core_files: []\n    inject_gaze: false\n"
+        "generated: {compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}\n"
+        "adapters:\n  codex:\n    exclude: []\n  claude:\n    exclude: []\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="skill name"):
+        load_registry(family)
+
+
+@pytest.mark.parametrize("name", ["a", "a1-b2", "a" * 64])
+def test_registry_accepts_skill_name_boundaries(load_registry, tmp_path, name):
+    family = tmp_path / "family"
+    (family / "chaesajang-core").mkdir(parents=True)
+    (family / "alpha").mkdir()
+    (family / "family.yaml").write_text(
+        "schema_version: 1\ncore: chaesajang-core\n"
+        "skills:\n"
+        f"  - name: {name}\n    source: alpha\n    core_files: []\n    inject_gaze: false\n"
+        "generated: {compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}\n"
+        "adapters:\n  codex:\n    exclude: []\n  claude:\n    exclude: []\n",
+        encoding="utf-8",
+    )
+
+    assert load_registry(family).skills[0].name == name
+
+
+@pytest.mark.parametrize(
+    "adapters",
+    [
+        "adapters:\n  codex:\n    exclude: []\n",
+        "adapters:\n  claude:\n    exclude: []\n",
+        "adapters:\n  codex:\n    exclude: []\n  claude:\n    exclude: []\n  other:\n    exclude: []\n",
+        "adapters:\n  ../runtime:\n    exclude: []\n  codex:\n    exclude: []\n  claude:\n    exclude: []\n",
+        "adapters:\n  codex: {}\n  claude:\n    exclude: []\n",
+    ],
+)
+def test_registry_requires_exact_runtime_adapter_keys(load_registry, tmp_path, adapters):
+    family = tmp_path / "family"
+    (family / "chaesajang-core").mkdir(parents=True)
+    (family / "alpha").mkdir()
+    (family / "family.yaml").write_text(
+        "schema_version: 1\ncore: chaesajang-core\n"
+        "skills:\n  - name: alpha\n    source: alpha\n    core_files: []\n    inject_gaze: false\n"
+        "generated: {compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}\n"
+        + adapters,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="adapters"):
+        load_registry(family)
+
+
+@pytest.mark.parametrize(
     "generated, core_files, codex_exclude",
     [
         ("{compatibility_snapshots: ../outside, dist: dist, experiments: experiments, package_extension: .skill}", "[]", "[]"),

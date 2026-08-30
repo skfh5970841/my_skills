@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -14,6 +15,8 @@ _TOP_LEVEL_KEYS = {"schema_version", "core", "skills", "generated", "adapters"}
 _SKILL_KEYS = {"name", "source", "core_files", "inject_gaze"}
 _ADAPTER_KEYS = {"exclude"}
 _GENERATED_KEYS = {"compatibility_snapshots", "dist", "experiments", "package_extension"}
+_RUNTIME_ADAPTERS = ("codex", "claude")
+_SKILL_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 
 @dataclass(frozen=True)
@@ -76,8 +79,14 @@ def _skill_spec(root: Path, core: Path, raw: object, names: set[str]) -> SkillSp
         raise ValueError(f"unknown skills keys: {sorted(unknown)}")
 
     name = raw.get("name")
-    if not isinstance(name, str) or not name:
-        raise ValueError("skill name must be a non-empty string")
+    if (
+        not isinstance(name, str)
+        or not 1 <= len(name) <= 64
+        or _SKILL_NAME_RE.fullmatch(name) is None
+    ):
+        raise ValueError(
+            "skill name must be 1..64 lowercase ASCII letters/digits in single-hyphen-separated segments"
+        )
     if name in names:
         raise ValueError(f"duplicate skill name: {name}")
     names.add(name)
@@ -109,16 +118,16 @@ def _adapters(raw: object) -> Mapping[str, Mapping[str, tuple[str, ...]]]:
     """Validate runtime adapter configuration and make it immutable."""
     if not isinstance(raw, dict):
         raise ValueError("adapters must be a mapping")
+    if set(raw) != set(_RUNTIME_ADAPTERS):
+        raise ValueError("adapters must contain exactly codex and claude")
     validated: dict[str, Mapping[str, tuple[str, ...]]] = {}
-    for runtime, config in raw.items():
-        if not isinstance(runtime, str) or not runtime:
-            raise ValueError("adapter runtime names must be non-empty strings")
+    for runtime in _RUNTIME_ADAPTERS:
+        config = raw[runtime]
         if not isinstance(config, dict):
             raise ValueError(f"adapters.{runtime} must be a mapping")
-        unknown = set(config) - _ADAPTER_KEYS
-        if unknown:
-            raise ValueError(f"unknown adapters.{runtime} keys: {sorted(unknown)}")
-        excluded = config.get("exclude", [])
+        if set(config) != _ADAPTER_KEYS:
+            raise ValueError(f"adapters.{runtime} must contain exactly {_ADAPTER_KEYS}")
+        excluded = config["exclude"]
         if not isinstance(excluded, list) or not all(
             isinstance(item, str) and item for item in excluded
         ):

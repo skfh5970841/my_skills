@@ -30,6 +30,12 @@ class GateResult:
     details: dict
 
 
+@dataclass(frozen=True)
+class _LocalMarkdownReference:
+    spelling: str
+    target: Path
+
+
 def _frontmatter(path: Path) -> tuple[dict | None, str | None]:
     text = path.read_text(encoding="utf-8")
     if not text.startswith("---\n"):
@@ -58,10 +64,12 @@ def _single_marker_block(text: str) -> str | None:
     return text[start : text.index(end, start) + len(end)]
 
 
-def _local_markdown_references(markdown: Path, source: Path) -> tuple[str, ...]:
-    """Find local .md links/backticks and keep their document-relative spelling."""
+def _resolved_markdown_references(
+    markdown: Path, source: Path
+) -> tuple[_LocalMarkdownReference, ...]:
+    """Resolve explicit local Markdown references according to their syntax."""
     text = markdown.read_text(encoding="utf-8")
-    local: list[str] = []
+    local: list[_LocalMarkdownReference] = []
 
     def normalized(candidate: str) -> str | None:
         path = candidate.split("#", 1)[0]
@@ -71,16 +79,25 @@ def _local_markdown_references(markdown: Path, source: Path) -> tuple[str, ...]:
 
     for candidate in _MARKDOWN_REFERENCE_RE.findall(text):
         if path := normalized(candidate):
-            local.append(path)
+            local.append(_LocalMarkdownReference(path, markdown.parent / path))
     for candidate in _BACKTICK_REFERENCE_RE.findall(text):
         if not (path := normalized(candidate)):
             continue
-        target = markdown.parent / path
-        # Bare code spans are often filename terminology rather than link syntax.
-        # Treat unambiguous paths and existing same-directory files as references.
-        if path.startswith(("./", "../")) or "/" in path or target.is_file():
-            local.append(path)
+        if path.startswith(("./", "../")):
+            target = markdown.parent / path
+        elif path.startswith("references/"):
+            target = source / path
+        elif "/" not in path and "\\" not in path and (markdown.parent / path).is_file():
+            target = markdown.parent / path
+        else:
+            continue
+        local.append(_LocalMarkdownReference(path, target))
     return tuple(local)
+
+
+def _local_markdown_references(markdown: Path, source: Path) -> tuple[str, ...]:
+    """Return recognized local .md spellings for diagnostics and tests."""
+    return tuple(reference.spelling for reference in _resolved_markdown_references(markdown, source))
 
 
 def _replace_gaze_contract(text: str, block: str) -> str:
@@ -154,17 +171,19 @@ def _check_source(registry: FamilyRegistry, source_root: Path, skill: SkillSpec,
         elif frontmatter.get("name") != skill.name:
             errors.append(f"{skill.name}: name-directory mismatch")
     for markdown in source.rglob("*.md") if source.is_dir() else ():
-        if markdown.relative_to(source).parts[:1] == ("references",):
-            continue
-        for reference in _local_markdown_references(markdown, source):
-            target = (markdown.parent / reference).resolve()
+        for reference in _resolved_markdown_references(markdown, source):
             try:
+                target = reference.target.resolve()
                 target.relative_to(source.resolve())
-            except ValueError:
-                errors.append(f"{skill.name}: broken relative reference {reference} in {markdown.name}")
+            except (OSError, RuntimeError, ValueError):
+                errors.append(
+                    f"{skill.name}: broken relative reference {reference.spelling} in {markdown.name}"
+                )
                 continue
             if not target.is_file():
-                errors.append(f"{skill.name}: broken relative reference {reference} in {markdown.name}")
+                errors.append(
+                    f"{skill.name}: broken relative reference {reference.spelling} in {markdown.name}"
+                )
     core = _path_from_source_root(registry, source_root, registry.core)
     for filename in skill.core_files:
         expected, actual = core / filename, source / "references" / filename
