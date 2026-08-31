@@ -9,7 +9,13 @@ approval and must not be converted into a release gate or overall score.
 
 Aggregation requires one source-stable `baseline` and `candidate`
 `row_type: deterministic` row for every case/repeat, with identical parity
-signatures. Axis counts stay separate by condition. Candidate failures on
+signatures. Approval-oriented aggregation must also supply the complete
+`expected_pairs` inventory, whose items contain exactly `case_id`,
+`target_skill`, `split`, and non-negative integer `repeat`. Missing, duplicate,
+or unexpected pairs are rejected. Without that inventory, passing gate
+booleans are `null`; a verified inventory with no expected golden pair also
+leaves `golden_passed` as `null`, preventing a vacuous golden pass. Axis counts
+stay separate by condition. Candidate failures on
 `request_fulfillment` or `meaning_and_facts` are listed in
 `hard_gate_failures`; failed candidate axes in this split are also listed in
 `golden_failures`, with separate boolean summaries.

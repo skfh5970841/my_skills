@@ -138,6 +138,66 @@ def _normalize_text(value: str) -> str:
     )
 
 
+def _shortest_common_superstring_length(values: Iterable[str]) -> int:
+    """Return the exact minimum length of text containing every literal."""
+
+    unique = list(dict.fromkeys(values))
+    literals = [
+        value
+        for index, value in enumerate(unique)
+        if not any(
+            index != other_index and value in other
+            for other_index, other in enumerate(unique)
+        )
+    ]
+    if not literals:
+        return 0
+    if len(literals) == 1:
+        return len(literals[0])
+
+    count = len(literals)
+    overlaps = [[0] * count for _ in range(count)]
+    for left_index, left in enumerate(literals):
+        for right_index, right in enumerate(literals):
+            if left_index == right_index:
+                continue
+            maximum = min(len(left), len(right))
+            overlaps[left_index][right_index] = max(
+                (
+                    size
+                    for size in range(1, maximum + 1)
+                    if left.endswith(right[:size])
+                ),
+                default=0,
+            )
+
+    full_mask = (1 << count) - 1
+    infinity = sum(len(literal) for literal in literals) + 1
+    lengths = [[infinity] * count for _ in range(full_mask + 1)]
+    for index, literal in enumerate(literals):
+        lengths[1 << index][index] = len(literal)
+
+    for mask in range(1, full_mask + 1):
+        for last in range(count):
+            current = lengths[mask][last]
+            if current == infinity:
+                continue
+            for following in range(count):
+                bit = 1 << following
+                if mask & bit:
+                    continue
+                candidate = (
+                    current
+                    + len(literals[following])
+                    - overlaps[last][following]
+                )
+                next_mask = mask | bit
+                if candidate < lengths[next_mask][following]:
+                    lengths[next_mask][following] = candidate
+
+    return min(lengths[full_mask])
+
+
 def _strict_json_loads(text: str) -> object:
     def reject_constant(value: str) -> None:
         raise ValueError(f"non-finite JSON constant: {value}")
@@ -295,30 +355,32 @@ class EvalCase:
         forbidden = {
             _normalize_text(term) for term in checks.get("forbidden_terms", ())
         }
-        positive = {
-            _normalize_text(term)
+        positive_literals = tuple(
+            term
             for key in ("required_terms", "exact_facts", "checklist_items")
             for term in checks.get(key, ())
+        )
+        positive = {_normalize_text(term) for term in positive_literals}
+        contradictions = {
+            (positive_term, forbidden_term)
+            for positive_term in positive
+            for forbidden_term in forbidden
+            if positive_term in forbidden_term or forbidden_term in positive_term
         }
-        contradictions = forbidden & positive
         if contradictions:
             raise ValueError(
-                "deterministic check contradiction: positive and forbidden terms overlap"
+                "deterministic check contradiction: normalized positive and "
+                "forbidden terms have a substring collision"
             )
         maximum_characters = checks.get("max_characters")
         if maximum_characters is not None:
-            longest_required_literal = max(
-                (
-                    len(term)
-                    for key in ("required_terms", "exact_facts", "checklist_items")
-                    for term in checks.get(key, ())
-                ),
-                default=0,
+            required_superstring_length = _shortest_common_superstring_length(
+                positive_literals
             )
-            if longest_required_literal > maximum_characters:
+            if required_superstring_length > maximum_characters:
                 raise ValueError(
-                    "max_characters creates an impossible length threshold for a "
-                    "required literal"
+                    "max_characters creates an impossible required-literal "
+                    f"superstring length ({required_superstring_length})"
                 )
 
         return cls(
@@ -471,6 +533,8 @@ def validate_split_isolation(
                     f"{left_case.case_id} ({left_split}) and "
                     f"{right_case.case_id} ({right_split})"
                 )
+            if left_split == right_split:
+                continue
 
             left_ngrams = _character_ngrams(left)
             right_ngrams = _character_ngrams(right)
@@ -1195,8 +1259,90 @@ def _aggregate_judge_rows(rows: list[dict], deterministic_pairs: Mapping[str, di
     return summary
 
 
-def aggregate_scores(rows: Iterable[dict]) -> dict:
-    """Aggregate typed deterministic gates and optional supporting judge pairs."""
+def _validate_expected_pair_inventory(
+    expected_pairs: Iterable[Mapping[str, object]],
+) -> frozenset[tuple[str, str, str, int]]:
+    """Validate the complete case/skill/split/repeat inventory for an eval run."""
+
+    if isinstance(expected_pairs, (str, bytes, Mapping)):
+        raise ValueError("expected_pairs must be an iterable of mappings")
+    try:
+        materialized = list(expected_pairs)
+    except TypeError as exc:
+        raise ValueError("expected_pairs must be an iterable of mappings") from exc
+
+    required_keys = frozenset({"case_id", "target_skill", "split", "repeat"})
+    inventory: set[tuple[str, str, str, int]] = set()
+    executions: set[tuple[str, int]] = set()
+    for index, pair in enumerate(materialized):
+        if not isinstance(pair, Mapping):
+            raise ValueError(f"expected_pairs[{index}] must be a mapping")
+        keys = frozenset(pair)
+        if keys != required_keys:
+            missing = sorted(required_keys - keys)
+            unknown = sorted(keys - required_keys)
+            details = []
+            if missing:
+                details.append(f"missing keys {missing}")
+            if unknown:
+                details.append(f"unknown keys {unknown}")
+            raise ValueError(
+                f"invalid expected deterministic pair at index {index}: "
+                + "; ".join(details)
+            )
+
+        case_id = pair["case_id"]
+        if (
+            not isinstance(case_id, str)
+            or not _CASE_ID_RE.fullmatch(case_id)
+            or _has_control_characters(case_id, allow_narrative_layout=False)
+        ):
+            raise ValueError(
+                f"invalid expected deterministic pair at index {index}: case_id"
+            )
+        target_skill = pair["target_skill"]
+        if (
+            not isinstance(target_skill, str)
+            or len(target_skill) > 64
+            or not _TARGET_SKILL_RE.fullmatch(target_skill)
+        ):
+            raise ValueError(
+                f"invalid expected deterministic pair at index {index}: target_skill"
+            )
+        split = pair["split"]
+        if not isinstance(split, str) or split not in SPLITS:
+            raise ValueError(
+                f"invalid expected deterministic pair at index {index}: split"
+            )
+        repeat = pair["repeat"]
+        if type(repeat) is not int or repeat < 0:
+            raise ValueError(
+                f"invalid expected deterministic pair at index {index}: repeat"
+            )
+
+        identity = (case_id, target_skill, split, repeat)
+        execution = (case_id, repeat)
+        if identity in inventory or execution in executions:
+            raise ValueError(
+                "duplicate expected deterministic pair for "
+                f"{case_id} repeat {repeat}"
+            )
+        inventory.add(identity)
+        executions.add(execution)
+    return frozenset(inventory)
+
+
+def aggregate_scores(
+    rows: Iterable[dict],
+    *,
+    expected_pairs: Iterable[Mapping[str, object]] | None = None,
+) -> dict:
+    """Aggregate gates, verifying complete coverage when inventory is supplied.
+
+    Passing approval booleans are reported only when ``expected_pairs`` proves
+    that every planned case/repeat is present and no unplanned pair was scored.
+    A detected failure remains ``False`` even without an inventory.
+    """
 
     materialized = list(rows)
     if not materialized:
@@ -1256,6 +1402,37 @@ def aggregate_scores(rows: Iterable[dict]) -> dict:
             raise ValueError(f"duplicate deterministic pair_id: {pair_id}")
         deterministic_pairs[pair_id] = baseline
 
+    expected_inventory = (
+        None
+        if expected_pairs is None
+        else _validate_expected_pair_inventory(expected_pairs)
+    )
+    observed_inventory = frozenset(
+        (
+            row["case_id"],
+            row["target_skill"],
+            row["split"],
+            row["repeat"],
+        )
+        for row in deterministic_pairs.values()
+    )
+    if expected_inventory is not None:
+        missing_pairs = expected_inventory - observed_inventory
+        unexpected_pairs = observed_inventory - expected_inventory
+        coverage_errors = []
+        if missing_pairs:
+            coverage_errors.append(
+                "missing expected deterministic pair(s): "
+                + ", ".join(repr(pair) for pair in sorted(missing_pairs))
+            )
+        if unexpected_pairs:
+            coverage_errors.append(
+                "unexpected deterministic pair(s): "
+                + ", ".join(repr(pair) for pair in sorted(unexpected_pairs))
+            )
+        if coverage_errors:
+            raise ValueError("; ".join(coverage_errors))
+
     axes = {
         axis: {
             condition: {"passed": 0, "failed": 0, "not_scored": 0, "count": 0}
@@ -1297,15 +1474,42 @@ def aggregate_scores(rows: Iterable[dict]) -> dict:
                         }
                     )
 
+    coverage_verified = expected_inventory is not None
+    expected_golden_pair_count = (
+        None
+        if expected_inventory is None
+        else sum(1 for _, _, split, _ in expected_inventory if split == "golden")
+    )
+    hard_gates_passed = (
+        False
+        if hard_gate_failures
+        else True
+        if coverage_verified
+        else None
+    )
+    golden_passed = (
+        False
+        if golden_failures
+        else True
+        if coverage_verified and expected_golden_pair_count
+        else None
+    )
+
     judge = _aggregate_judge_rows(judge_rows, deterministic_pairs)
     return {
         "row_count": len(materialized),
         "deterministic_row_count": len(deterministic_rows),
         "deterministic_pair_count": len(deterministic_pairs),
+        "observed_pair_count": len(observed_inventory),
+        "coverage_verified": coverage_verified,
+        "expected_pair_count": (
+            None if expected_inventory is None else len(expected_inventory)
+        ),
+        "expected_golden_pair_count": expected_golden_pair_count,
         "axes": axes,
         "hard_gate_failures": hard_gate_failures,
         "golden_failures": golden_failures,
-        "hard_gates_passed": not hard_gate_failures,
-        "golden_passed": not golden_failures,
+        "hard_gates_passed": hard_gates_passed,
+        "golden_passed": golden_passed,
         "judge": judge,
     }

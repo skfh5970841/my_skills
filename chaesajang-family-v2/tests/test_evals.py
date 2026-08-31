@@ -85,6 +85,32 @@ def output_row(text, case_id="case-1", **overrides):
     return row
 
 
+def expected_pair(case, repeat=0):
+    return {
+        "case_id": case.case_id,
+        "target_skill": case.target_skill,
+        "split": case.split,
+        "repeat": repeat,
+    }
+
+
+def deterministic_pair(evals, case, repeat=0, text="핵심 질문. 결론. 사실 하나."):
+    provenance = {
+        "case_id": case.case_id,
+        "target_skill": case.target_skill,
+        "repeat": repeat,
+        "input": case.generator_brief,
+    }
+    return [
+        evals.make_deterministic_row(
+            case, output_row(text, **provenance), "baseline"
+        ),
+        evals.make_deterministic_row(
+            case, output_row(text, **provenance), "candidate"
+        ),
+    ]
+
+
 def valid_judge_payload(winner="A"):
     return {
         "axes": {
@@ -1094,3 +1120,182 @@ def test_real_json_runner_boundary_blocks_malformed_and_schema_invalid_rows(
     assert evals.validate_external_scores(partial_rows)
     with pytest.raises(ValueError, match="invalid external score"):
         evals.aggregate_scores([*deterministic, *partial_rows])
+
+
+def test_aggregate_without_inventory_never_claims_passing_coverage(loop_modules):
+    evals, _, _ = loop_modules
+    case = eval_case(evals)
+
+    aggregate = evals.aggregate_scores(deterministic_pair(evals, case))
+
+    assert aggregate["coverage_verified"] is False
+    assert aggregate["expected_pair_count"] is None
+    assert aggregate["hard_gates_passed"] is None
+    assert aggregate["golden_passed"] is None
+
+
+def test_dev_only_inventory_has_no_vacuous_golden_pass(loop_modules):
+    evals, _, _ = loop_modules
+    case = eval_case(evals)
+
+    aggregate = evals.aggregate_scores(
+        deterministic_pair(evals, case), expected_pairs=[expected_pair(case)]
+    )
+
+    assert aggregate["coverage_verified"] is True
+    assert aggregate["expected_pair_count"] == 1
+    assert aggregate["expected_golden_pair_count"] == 0
+    assert aggregate["hard_gates_passed"] is True
+    assert aggregate["golden_passed"] is None
+
+
+def test_aggregate_rejects_partial_golden_inventory(loop_modules):
+    evals, _, _ = loop_modules
+    first = eval_case(evals, "golden-one", split="golden")
+    second = eval_case(evals, "golden-two", split="golden")
+
+    with pytest.raises(ValueError, match="missing expected deterministic pair"):
+        evals.aggregate_scores(
+            deterministic_pair(evals, first),
+            expected_pairs=[expected_pair(first), expected_pair(second)],
+        )
+
+
+def test_aggregate_rejects_missing_expected_repeat(loop_modules):
+    evals, _, _ = loop_modules
+    case = eval_case(evals)
+
+    with pytest.raises(ValueError, match="missing expected deterministic pair"):
+        evals.aggregate_scores(
+            deterministic_pair(evals, case, repeat=0),
+            expected_pairs=[expected_pair(case, 0), expected_pair(case, 1)],
+        )
+
+
+def test_aggregate_rejects_unexpected_extra_pair(loop_modules):
+    evals, _, _ = loop_modules
+    expected = eval_case(evals, "expected-case")
+    extra = eval_case(evals, "extra-case")
+
+    with pytest.raises(ValueError, match="unexpected deterministic pair"):
+        evals.aggregate_scores(
+            [
+                *deterministic_pair(evals, expected),
+                *deterministic_pair(evals, extra),
+            ],
+            expected_pairs=[expected_pair(expected)],
+        )
+
+
+def test_near_duplicates_are_allowed_within_one_split_but_not_across(loop_modules):
+    evals, _, _ = loop_modules
+    original = "".join(chr(0xAC00 + index) for index in range(120))
+    variant = original[:60] + "힣" + original[61:]
+    same_split_first = eval_case(
+        evals,
+        "same-one",
+        generator_brief=original,
+        evaluator_reference="첫 번째 평가 전용 원문은 충분히 길고 서로 다릅니다",
+        source_group="shared/source",
+    )
+    same_split_second = eval_case(
+        evals,
+        "same-two",
+        generator_brief=variant,
+        evaluator_reference="두 번째 평가 전용 원문은 충분히 길고 서로 다릅니다",
+        source_group="shared/source",
+    )
+
+    same_split_errors = evals.validate_split_isolation(
+        {"dev": [same_split_first, same_split_second]}
+    )
+
+    assert not any("8-gram generator_brief" in error for error in same_split_errors)
+    assert not any("source_group" in error for error in same_split_errors)
+
+    holdout = eval_case(
+        evals,
+        "cross-split",
+        split="holdout",
+        generator_brief=variant,
+        evaluator_reference="홀드아웃 평가 전용 원문도 충분히 길고 별개입니다",
+        source_group="holdout/source",
+    )
+    cross_split_errors = evals.validate_split_isolation(
+        {"dev": [same_split_first], "holdout": [holdout]}
+    )
+    assert any("8-gram generator_brief" in error for error in cross_split_errors)
+
+
+def test_short_text_near_duplicates_are_allowed_only_within_one_split(loop_modules):
+    evals, _, _ = loop_modules
+    first = eval_case(
+        evals,
+        "short-one",
+        generator_brief="abcdefg",
+        deterministic_checks={"output_present": True},
+        source_group="short/source",
+    )
+    second = eval_case(
+        evals,
+        "short-two",
+        generator_brief="abcdefx",
+        deterministic_checks={"output_present": True},
+        source_group="short/source",
+    )
+
+    errors = evals.validate_split_isolation({"dev": [first, second]})
+
+    assert not any("short-text generator_brief" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "required, forbidden",
+    [
+        ("핵심 결론", "결론"),
+        ("결론", "핵심 결론"),
+        ("핵 심, 결론", "심결"),
+    ],
+)
+def test_eval_case_rejects_normalized_required_forbidden_substring_collisions(
+    loop_modules, required, forbidden
+):
+    evals, _, _ = loop_modules
+    data = case_data()
+    data["deterministic_checks"] = {
+        "required_terms": [required],
+        "forbidden_terms": [forbidden],
+    }
+
+    with pytest.raises(ValueError, match="contradiction"):
+        evals.EvalCase.from_dict(data, "dev")
+
+
+def test_eval_case_uses_exact_overlapping_superstring_length_for_maximum(loop_modules):
+    evals, _, _ = loop_modules
+    overlapping = case_data()
+    overlapping["deterministic_checks"] = {
+        "output_present": True,
+        "required_terms": ["abcd", "cdef", "defg"],
+        "max_characters": 7,
+    }
+    case = evals.EvalCase.from_dict(overlapping, "dev")
+    assert case.deterministic_checks["max_characters"] == 7
+
+    impossible = copy.deepcopy(overlapping)
+    impossible["deterministic_checks"]["max_characters"] = 6
+    with pytest.raises(ValueError, match="superstring|impossible"):
+        evals.EvalCase.from_dict(impossible, "dev")
+
+
+def test_eval_case_superstring_length_accounts_for_contained_literals(loop_modules):
+    evals, _, _ = loop_modules
+    data = case_data()
+    data["deterministic_checks"] = {
+        "required_terms": ["가나다라마바사", "나다라", "라마바사"],
+        "max_characters": 7,
+    }
+
+    case = evals.EvalCase.from_dict(data, "dev")
+
+    assert case.deterministic_checks["max_characters"] == 7
