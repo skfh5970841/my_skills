@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from typing import Mapping
 
-from .evals import AXES, EvalCase
+from .evals import (
+    AXES,
+    EvalCase,
+    generation_pair_id,
+    generation_parity_signature,
+    validate_generation_row,
+)
 from .runner import RunConfig, run_command
 
 
@@ -124,10 +131,30 @@ def judge_pairs(
     """Run Codex in both presentation orders and map anonymous labels back."""
 
     if config.runtime != "codex":
-        raise ValueError("pairwise judge requires the codex runtime")
+        raise ValueError("judge config runtime must be codex")
+    validate_generation_row(case, baseline, "baseline")
+    validate_generation_row(case, candidate, "candidate")
+    for field in (
+        "case_id",
+        "target_skill",
+        "repeat",
+        "model",
+        "reasoning",
+        "runtime",
+        "input",
+        "prompt",
+    ):
+        if baseline[field] != candidate[field]:
+            raise ValueError(f"baseline/candidate {field} must match")
+    for field in ("model", "reasoning", "runtime"):
+        if getattr(config, field) != baseline[field]:
+            raise ValueError(f"judge config {field} must match generation rows")
 
     baseline_output = _response_text(baseline, "baseline")
     candidate_output = _response_text(candidate, "candidate")
+    parity_signature = generation_parity_signature(case, baseline)
+    repeat = baseline["repeat"]
+    pair_id = generation_pair_id(case, repeat, parity_signature)
     rows: list[dict] = []
 
     for order in ("AB", "BA"):
@@ -141,7 +168,13 @@ def judge_pairs(
             replace(config, stdin_text=prompt, expect_json=True)
         )
         row = {
+            "row_type": "judge",
             "case_id": case.case_id,
+            "target_skill": case.target_skill,
+            "split": case.split,
+            "repeat": repeat,
+            "pair_id": pair_id,
+            "parity_signature": parity_signature,
             "rubric_version": RUBRIC_VERSION,
             "order": order,
             "role": "supporting_only",
@@ -150,6 +183,13 @@ def judge_pairs(
             "candidate_length": len(candidate_output),
             "model": config.model,
             "reasoning": config.reasoning,
+            "runtime": config.runtime,
+            "command": list(config.command),
+            "cwd": str(config.cwd),
+            "timeout_seconds": config.timeout_seconds,
+            "returncode": result.returncode,
+            "elapsed_ms": result.elapsed_ms,
+            "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
             "raw_output": result.stdout,
             "stderr": result.stderr,
             "label_map": label_map,

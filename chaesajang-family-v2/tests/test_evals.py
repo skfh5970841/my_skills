@@ -1,8 +1,10 @@
+import copy
 import json
 import math
 import sys
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -59,8 +61,28 @@ def eval_case(evals, case_id="case-1", split="dev", **overrides):
     return evals.EvalCase.from_dict(case_data(case_id, **overrides), split)
 
 
-def output_row(text, case_id="case-1"):
-    return {"case_id": case_id, "output": text, "status": "completed"}
+def output_row(text, case_id="case-1", **overrides):
+    row = {
+        "case_id": case_id,
+        "target_skill": "chaesajang-style",
+        "repeat": 0,
+        "input": case_data(case_id)["generator_brief"],
+        "prompt": "Neutral generation prompt shared by both conditions",
+        "output": text,
+        "stderr": "",
+        "command": ["codex", "exec", "-"],
+        "cwd": "C:/source",
+        "timeout_seconds": 30,
+        "model": "gpt-test",
+        "reasoning": "high",
+        "runtime": "codex",
+        "elapsed_ms": 1,
+        "status": "completed",
+        "returncode": 0,
+        "source_stable": True,
+    }
+    row.update(overrides)
+    return row
 
 
 def valid_judge_payload(winner="A"):
@@ -213,6 +235,7 @@ def test_split_isolation_collects_ids_groups_exact_and_near_duplicates(loop_modu
         generator_brief="서로 다른 요청",
         evaluator_reference="서로 다른 평가 원문",
         source_group="other/group",
+        deterministic_checks={"output_present": True},
     )
 
     errors = evals.validate_split_isolation(
@@ -231,6 +254,7 @@ def test_split_isolation_checks_references_separately_and_handles_short_text(loo
         "a",
         generator_brief="긴 개발 요청 하나",
         evaluator_reference="짧음",
+        deterministic_checks={"output_present": True},
     )
     holdout = eval_case(
         evals,
@@ -238,6 +262,7 @@ def test_split_isolation_checks_references_separately_and_handles_short_text(loo
         split="holdout",
         generator_brief="완전히 별개의 홀드아웃 요청",
         evaluator_reference="짧음!",
+        deterministic_checks={"output_present": True},
     )
 
     errors = evals.validate_split_isolation({"dev": [dev], "holdout": [holdout]})
@@ -392,7 +417,18 @@ def test_codex_judge_runs_ab_and_ba_and_maps_labels_back(
     assert all(row["baseline_length"] == len("old response") for row in rows)
     assert all(row["candidate_length"] == len("new response") for row in rows)
     assert all(row["model"] == "gpt-test" and row["reasoning"] == "high" for row in rows)
+    assert all(row["runtime"] == "codex" and row["repeat"] == 0 for row in rows)
     assert all(row["rubric_version"] == judge.RUBRIC_VERSION for row in rows)
+    assert all(row["row_type"] == "judge" for row in rows)
+    assert rows[0]["pair_id"] == rows[1]["pair_id"]
+    assert len(rows[0]["pair_id"]) == 64
+    assert rows[0]["parity_signature"] == rows[1]["parity_signature"]
+    assert all(row["command"] == ["codex", "exec", "-"] for row in rows)
+    assert all(row["cwd"] == str(tmp_path) for row in rows)
+    assert all(row["timeout_seconds"] == 30 for row in rows)
+    assert all(row["returncode"] == 0 and row["elapsed_ms"] == 7 for row in rows)
+    assert all(len(row["prompt_sha256"]) == 64 for row in rows)
+    assert rows[0]["prompt_sha256"] != rows[1]["prompt_sha256"]
     assert all(row["raw_output"] for row in rows)
     assert all(call.expect_json is True for call in calls)
     assert all(call.runtime == "codex" for call in calls)
@@ -492,6 +528,9 @@ def test_aggregate_preserves_axes_counts_and_ab_ba_disagreement(
     tmp_path, loop_modules, monkeypatch
 ):
     evals, judge, runner = loop_modules
+    case = eval_case(evals)
+    baseline = output_row("핵심 질문. 결론. 사실 하나.")
+    candidate = output_row("핵심 질문. 결론. 사실 하나.")
     winners = iter(("A", "A"))
     monkeypatch.setattr(
         judge,
@@ -505,21 +544,26 @@ def test_aggregate_preserves_axes_counts_and_ab_ba_disagreement(
         ),
     )
     rows = judge.judge_pairs(
-        eval_case(evals), output_row("old"), output_row("new"), run_config(runner, tmp_path)
+        case, baseline, candidate, run_config(runner, tmp_path)
     )
+    deterministic_rows = [
+        evals.make_deterministic_row(case, baseline, "baseline"),
+        evals.make_deterministic_row(case, candidate, "candidate"),
+    ]
 
-    aggregate = evals.aggregate_scores(rows)
+    aggregate = evals.aggregate_scores([*deterministic_rows, *rows])
 
-    assert aggregate["role"] == "supporting_only"
-    assert aggregate["row_count"] == 2
+    judge_aggregate = aggregate["judge"]
+    assert judge_aggregate["role"] == "supporting_only"
+    assert judge_aggregate["row_count"] == 2
     assert tuple(aggregate["axes"]) == AXES
-    assert aggregate["axes"]["style_behavior"] == {
+    assert judge_aggregate["axes"]["style_behavior"] == {
         "baseline": 1,
         "candidate": 1,
         "tie": 0,
         "count": 2,
     }
-    disagreement = aggregate["ab_ba_disagreement"]["style_behavior"]
+    disagreement = judge_aggregate["ab_ba_disagreement"]["style_behavior"]
     assert disagreement["compared_pairs"] == 1
     assert disagreement["disagreements"] == 1
     assert "ready_for_approval" not in aggregate
@@ -530,3 +574,523 @@ def test_aggregate_rejects_invalid_rows_instead_of_averaging(loop_modules):
     evals, _, _ = loop_modules
     with pytest.raises(ValueError, match="invalid external score"):
         evals.aggregate_scores([{"status": "invalid"}])
+
+
+def test_holdout_leakage_ignores_non_generator_output_and_stderr(loop_modules):
+    evals, _, _ = loop_modules
+    holdout = eval_case(
+        evals,
+        "holdout-output",
+        split="holdout",
+        evaluator_reference="비공개 평가 원문은 오직 평가기에만 보여야 합니다",
+    )
+    row = output_row(
+        holdout.evaluator_reference,
+        case_id=holdout.case_id,
+        input=holdout.generator_brief,
+        prompt=f"Generator brief: {holdout.generator_brief}",
+        stderr=holdout.evaluator_reference,
+    )
+
+    assert evals.validate_holdout_leakage([holdout], [row]) == []
+
+
+def test_holdout_leakage_detects_meaningful_partial_but_not_tiny_phrase(loop_modules):
+    evals, _, _ = loop_modules
+    reference = "고유한비공개평가원문일부분이외부생성문맥으로노출되면안됩니다"
+    holdout = eval_case(
+        evals,
+        "holdout-partial",
+        split="holdout",
+        evaluator_reference=reference,
+    )
+    threshold = evals.MIN_PARTIAL_LEAK_CHARACTERS
+    assert threshold == 16
+    partial = reference[3 : 3 + threshold]
+
+    partial_errors = evals.validate_holdout_leakage(
+        [holdout], [{"prompt": f"앞부분 {partial} 뒷부분"}]
+    )
+    tiny_errors = evals.validate_holdout_leakage(
+        [holdout], [{"prompt": "비공개 평가 원문"}]
+    )
+
+    assert any("partial" in error for error in partial_errors)
+    assert tiny_errors == []
+
+
+def test_holdout_leakage_detects_near_full_variant_inside_prompt(loop_modules):
+    evals, _, _ = loop_modules
+    reference = "".join(chr(0xAC00 + index) for index in range(120))
+    near_variant = reference[:60] + "힣" + reference[61:]
+    holdout = eval_case(
+        evals,
+        "holdout-near",
+        split="holdout",
+        evaluator_reference=reference,
+    )
+
+    errors = evals.validate_holdout_leakage(
+        [holdout],
+        [
+            {
+                "prompt": f"unrelated-prefix-{near_variant}-unrelated-suffix",
+                "research_cards": [{"content": "safe"}],
+            }
+        ],
+    )
+
+    assert any("8-gram" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        ({"target_skill": "Uppercase"}, "target_skill"),
+        ({"target_skill": "double--hyphen"}, "target_skill"),
+        ({"target_skill": "a" * 65}, "target_skill"),
+        ({"case_id": "../case"}, "case_id"),
+        (
+            {"deterministic_checks": {"required_terms": []}},
+            "required_terms",
+        ),
+        (
+            {"deterministic_checks": {"output_present": False}},
+            "output_present",
+        ),
+        (
+            {
+                "deterministic_checks": {
+                    "required_terms": ["같은 말"],
+                    "forbidden_terms": ["같은말"],
+                }
+            },
+            "contradiction",
+        ),
+        (
+            {
+                "axes": [axis for axis in AXES if axis != "meaning_and_facts"],
+            },
+            "meaning_and_facts",
+        ),
+        ({"deterministic_checks": {"min_characters": 0}}, "min_characters"),
+        ({"deterministic_checks": {"max_characters": 0}}, "max_characters"),
+        (
+            {
+                "deterministic_checks": {"max_source_overlap_characters": 99},
+                "evaluator_reference": "짧은 평가 원문",
+            },
+            "overlap",
+        ),
+    ],
+)
+def test_eval_case_enforces_strict_nonvacuous_contract(loop_modules, mutation, message):
+    evals, _, _ = loop_modules
+    data = case_data()
+    data.update(mutation)
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        evals.EvalCase.from_dict(data, "dev")
+
+
+def test_eval_case_allows_tabs_and_newlines_only_in_narrative_text(loop_modules):
+    evals, _, _ = loop_modules
+    case = eval_case(
+        evals,
+        generator_brief="첫 줄\n\t둘째 줄",
+        evaluator_reference="평가 줄 하나\n\t평가 줄 둘",
+        deterministic_checks={"output_present": True},
+    )
+
+    assert "\n\t" in case.generator_brief
+    assert "\n\t" in case.evaluator_reference
+    with pytest.raises(ValueError, match="control"):
+        eval_case(
+            evals,
+            generator_brief="unsafe\u000btext",
+            deterministic_checks={"output_present": True},
+        )
+
+
+def test_split_validation_rejects_unknown_keys_and_duplicates_within_a_split(loop_modules):
+    evals, _, _ = loop_modules
+    first = eval_case(
+        evals,
+        "same-id",
+        generator_brief="중복 생성 요청",
+        evaluator_reference="중복 평가 원문",
+        source_group="same/group",
+        deterministic_checks={"output_present": True},
+    )
+    duplicate_id_and_generator = eval_case(
+        evals,
+        "same-id",
+        generator_brief="중복 생성 요청!",
+        evaluator_reference="서로 다른 평가 원문",
+        source_group="same/group",
+        deterministic_checks={"output_present": True},
+    )
+    duplicate_reference = eval_case(
+        evals,
+        "third-id",
+        generator_brief="완전히 다른 생성 요청",
+        evaluator_reference="중복 평가 원문!",
+        source_group="same/group",
+        deterministic_checks={"output_present": True},
+    )
+
+    errors = evals.validate_split_isolation(
+        {"dev": [first, duplicate_id_and_generator, duplicate_reference], "training": []}
+    )
+
+    assert any("unknown split" in error for error in errors)
+    assert any("duplicate case_id" in error for error in errors)
+    assert any("duplicate" in error and "generator_brief" in error for error in errors)
+    assert any("duplicate" in error and "evaluator_reference" in error for error in errors)
+    assert not any("source_group" in error for error in errors)
+
+
+def test_split_validation_uses_short_text_near_similarity_fallback(loop_modules):
+    evals, _, _ = loop_modules
+    dev = eval_case(
+        evals,
+        "short-dev",
+        generator_brief="abcdefg",
+        evaluator_reference="평가자료하나",
+        source_group="dev/group",
+        deterministic_checks={"output_present": True},
+    )
+    holdout = eval_case(
+        evals,
+        "short-holdout",
+        split="holdout",
+        generator_brief="abcdefx",
+        evaluator_reference="별개평가자료",
+        source_group="holdout/group",
+        deterministic_checks={"output_present": True},
+    )
+
+    errors = evals.validate_split_isolation({"dev": [dev], "holdout": [holdout]})
+
+    assert any("short-text" in error and "generator_brief" in error for error in errors)
+
+
+def test_validate_case_targets_binds_cases_to_registry_membership(loop_modules):
+    evals, _, _ = loop_modules
+    registry = SimpleNamespace(
+        skills=(SimpleNamespace(name="chaesajang-style"), SimpleNamespace(name="other-skill"))
+    )
+
+    assert evals.validate_case_targets([eval_case(evals)], registry) == []
+    errors = evals.validate_case_targets(
+        [eval_case(evals, target_skill="missing-skill")], registry
+    )
+    assert len(errors) == 1
+    assert "target_skill" in errors[0]
+
+
+@pytest.mark.parametrize(
+    "side, field, value, message",
+    [
+        ("baseline", "status", "blocked_external", "completed"),
+        ("candidate", "source_stable", False, "stable"),
+        ("candidate", "case_id", "other-case", "case_id"),
+        ("candidate", "target_skill", "other-skill", "target_skill"),
+        ("candidate", "repeat", 1, "repeat"),
+        ("candidate", "model", "other-model", "model"),
+        ("candidate", "reasoning", "low", "reasoning"),
+        ("candidate", "runtime", "claude", "runtime"),
+        ("candidate", "input", "other input", "input"),
+        ("candidate", "prompt", "other prompt", "prompt"),
+    ],
+)
+def test_judge_rejects_generation_pair_mismatch_before_execution(
+    tmp_path, loop_modules, monkeypatch, side, field, value, message
+):
+    evals, judge, runner = loop_modules
+    baseline = output_row("old")
+    candidate = output_row("new")
+    target = baseline if side == "baseline" else candidate
+    target[field] = value
+    monkeypatch.setattr(judge, "run_command", lambda _: pytest.fail("must not run"))
+
+    with pytest.raises(ValueError, match=message):
+        judge.judge_pairs(
+            eval_case(evals), baseline, candidate, run_config(runner, tmp_path)
+        )
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("model", "other-model"), ("reasoning", "low"), ("runtime", "claude")],
+)
+def test_judge_config_must_match_generation_provenance_before_execution(
+    tmp_path, loop_modules, monkeypatch, field, value
+):
+    evals, judge, runner = loop_modules
+    config = replace(run_config(runner, tmp_path), **{field: value})
+    monkeypatch.setattr(judge, "run_command", lambda _: pytest.fail("must not run"))
+
+    with pytest.raises(ValueError, match=field):
+        judge.judge_pairs(
+            eval_case(evals), output_row("old"), output_row("new"), config
+        )
+
+
+def test_pair_ids_are_stable_per_repeat_and_distinct_between_repeats(
+    tmp_path, loop_modules, monkeypatch
+):
+    evals, judge, runner = loop_modules
+    monkeypatch.setattr(
+        judge,
+        "run_command",
+        lambda _: runner.RunResult(
+            "completed", 0, json.dumps(valid_judge_payload()), "", 1
+        ),
+    )
+    case = eval_case(evals)
+
+    repeat_zero = judge.judge_pairs(
+        case,
+        output_row("old", repeat=0),
+        output_row("new", repeat=0),
+        run_config(runner, tmp_path),
+    )
+    repeat_one = judge.judge_pairs(
+        case,
+        output_row("old", repeat=1),
+        output_row("new", repeat=1),
+        run_config(runner, tmp_path),
+    )
+
+    assert len({row["pair_id"] for row in repeat_zero}) == 1
+    assert len({row["pair_id"] for row in repeat_one}) == 1
+    assert repeat_zero[0]["pair_id"] != repeat_one[0]["pair_id"]
+
+
+def test_make_deterministic_row_is_typed_and_preserves_pair_parity(loop_modules):
+    evals, _, _ = loop_modules
+    case = eval_case(evals, split="golden")
+    baseline = output_row("핵심 질문. 결론. 사실 하나.", repeat=2)
+    candidate = output_row("핵심 질문. 결론. 사실 하나.", repeat=2)
+
+    baseline_row = evals.make_deterministic_row(case, baseline, "baseline")
+    candidate_row = evals.make_deterministic_row(case, candidate, "candidate")
+
+    assert baseline_row["row_type"] == candidate_row["row_type"] == "deterministic"
+    assert baseline_row["split"] == candidate_row["split"] == "golden"
+    assert baseline_row["repeat"] == candidate_row["repeat"] == 2
+    assert baseline_row["parity_signature"] == candidate_row["parity_signature"]
+    assert tuple(baseline_row["scores"]) == AXES
+    assert baseline_row["condition"] == "baseline"
+    assert candidate_row["condition"] == "candidate"
+
+
+def test_aggregate_requires_complete_unique_parity_matched_deterministic_pairs(loop_modules):
+    evals, _, _ = loop_modules
+    case = eval_case(evals)
+    baseline_generation = output_row("핵심 질문. 결론. 사실 하나.")
+    candidate_generation = output_row("핵심 질문. 결론. 사실 하나.")
+    baseline = evals.make_deterministic_row(case, baseline_generation, "baseline")
+    candidate = evals.make_deterministic_row(case, candidate_generation, "candidate")
+
+    with pytest.raises(ValueError, match="complete.*baseline.*candidate"):
+        evals.aggregate_scores([baseline])
+    with pytest.raises(ValueError, match="duplicate"):
+        evals.aggregate_scores([baseline, copy.deepcopy(baseline), candidate])
+
+    mismatched_generation = output_row(
+        "핵심 질문. 결론. 사실 하나.", prompt="different prompt"
+    )
+    mismatched = evals.make_deterministic_row(
+        case, mismatched_generation, "candidate"
+    )
+    with pytest.raises(ValueError, match="parity"):
+        evals.aggregate_scores([baseline, mismatched])
+
+
+def test_aggregate_reports_candidate_hard_gate_and_golden_failures(loop_modules):
+    evals, _, _ = loop_modules
+    case = eval_case(evals, split="golden")
+    baseline = evals.make_deterministic_row(
+        case, output_row("핵심 질문. 결론. 사실 하나."), "baseline"
+    )
+    candidate = evals.make_deterministic_row(
+        case, output_row("허위"), "candidate"
+    )
+
+    aggregate = evals.aggregate_scores([candidate, baseline])
+
+    assert aggregate["deterministic_pair_count"] == 1
+    assert aggregate["axes"]["request_fulfillment"]["baseline"]["passed"] == 1
+    assert aggregate["axes"]["request_fulfillment"]["candidate"]["failed"] == 1
+    assert {item["axis"] for item in aggregate["hard_gate_failures"]} == {
+        "request_fulfillment",
+        "meaning_and_facts",
+    }
+    assert {item["axis"] for item in aggregate["golden_failures"]} == {
+        "request_fulfillment",
+        "meaning_and_facts",
+    }
+    assert aggregate["hard_gates_passed"] is False
+    assert aggregate["golden_passed"] is False
+    assert aggregate["judge"]["role"] == "supporting_only"
+    assert aggregate["judge"]["row_count"] == 0
+    assert "ready_for_approval" not in aggregate
+    assert "human_approval" not in aggregate
+
+
+def test_judge_aggregate_pairs_shuffled_multiple_repeats_by_pair_id(
+    tmp_path, loop_modules, monkeypatch
+):
+    evals, judge, runner = loop_modules
+    case = eval_case(evals)
+    monkeypatch.setattr(
+        judge,
+        "run_command",
+        lambda _: runner.RunResult(
+            "completed", 0, json.dumps(valid_judge_payload("A")), "", 1
+        ),
+    )
+    deterministic_rows = []
+    judge_rows = []
+    for repeat in (0, 1):
+        baseline = output_row("핵심 질문. 결론. 사실 하나.", repeat=repeat)
+        candidate = output_row("핵심 질문. 결론. 사실 하나.", repeat=repeat)
+        deterministic_rows.extend(
+            (
+                evals.make_deterministic_row(case, baseline, "baseline"),
+                evals.make_deterministic_row(case, candidate, "candidate"),
+            )
+        )
+        judge_rows.extend(
+            judge.judge_pairs(case, baseline, candidate, run_config(runner, tmp_path))
+        )
+    shuffled = [
+        judge_rows[3],
+        deterministic_rows[1],
+        judge_rows[0],
+        deterministic_rows[3],
+        judge_rows[2],
+        deterministic_rows[0],
+        judge_rows[1],
+        deterministic_rows[2],
+    ]
+
+    aggregate = evals.aggregate_scores(shuffled)
+
+    assert aggregate["deterministic_pair_count"] == 2
+    assert aggregate["judge"]["pair_count"] == 2
+    assert aggregate["judge"]["row_count"] == 4
+    assert aggregate["judge"]["ab_ba_disagreement"]["style_behavior"] == {
+        "compared_pairs": 2,
+        "disagreements": 2,
+    }
+
+
+def test_judge_aggregate_rejects_unbalanced_and_duplicate_orders(
+    tmp_path, loop_modules, monkeypatch
+):
+    evals, judge, runner = loop_modules
+    case = eval_case(evals)
+    baseline_generation = output_row("핵심 질문. 결론. 사실 하나.")
+    candidate_generation = output_row("핵심 질문. 결론. 사실 하나.")
+    deterministic = [
+        evals.make_deterministic_row(case, baseline_generation, "baseline"),
+        evals.make_deterministic_row(case, candidate_generation, "candidate"),
+    ]
+    monkeypatch.setattr(
+        judge,
+        "run_command",
+        lambda _: runner.RunResult(
+            "completed", 0, json.dumps(valid_judge_payload()), "", 1
+        ),
+    )
+    rows = judge.judge_pairs(
+        case, baseline_generation, candidate_generation, run_config(runner, tmp_path)
+    )
+
+    with pytest.raises(ValueError, match="exactly one AB and BA"):
+        evals.aggregate_scores([*deterministic, rows[0]])
+    with pytest.raises(ValueError, match="exactly one AB and BA"):
+        evals.aggregate_scores([*deterministic, rows[0], copy.deepcopy(rows[0]), rows[1]])
+
+
+def test_valid_external_rows_reject_validation_errors_and_bad_provenance(
+    tmp_path, loop_modules, monkeypatch
+):
+    evals, judge, runner = loop_modules
+    monkeypatch.setattr(
+        judge,
+        "run_command",
+        lambda _: runner.RunResult(
+            "completed", 0, json.dumps(valid_judge_payload()), "", 1
+        ),
+    )
+    valid = judge.judge_pairs(
+        eval_case(evals), output_row("old"), output_row("new"), run_config(runner, tmp_path)
+    )[0]
+    mutations = {
+        "validation_errors": ["must not coexist with valid"],
+        "stderr": 7,
+        "command": [],
+        "cwd": "",
+        "timeout_seconds": 0,
+        "returncode": True,
+        "elapsed_ms": -1,
+        "prompt_sha256": "bad",
+    }
+
+    for field, value in mutations.items():
+        poisoned = copy.deepcopy(valid)
+        poisoned[field] = value
+        errors = evals.validate_external_scores([poisoned])
+        assert any(field in error for error in errors), (field, errors)
+
+
+def test_real_json_runner_boundary_blocks_malformed_and_schema_invalid_rows(
+    tmp_path, loop_modules, monkeypatch
+):
+    evals, judge, runner = loop_modules
+    case = eval_case(evals)
+    baseline = output_row("핵심 질문. 결론. 사실 하나.")
+    candidate = output_row("핵심 질문. 결론. 사실 하나.")
+    judge_config = run_config(runner, tmp_path)
+    deterministic = [
+        evals.make_deterministic_row(case, baseline, "baseline"),
+        evals.make_deterministic_row(case, candidate, "candidate"),
+    ]
+
+    malformed_result = runner.run_command(
+        replace(
+            judge_config,
+            command=(sys.executable, "-c", "print('{bad')"),
+            expect_json=True,
+        )
+    )
+    assert malformed_result.status == "blocked_external"
+    monkeypatch.setattr(judge, "run_command", lambda _: malformed_result)
+    malformed_rows = judge.judge_pairs(case, baseline, candidate, judge_config)
+    assert all(row["status"] == "blocked_external" for row in malformed_rows)
+    assert evals.validate_external_scores(malformed_rows)
+    with pytest.raises(ValueError, match="invalid external score"):
+        evals.aggregate_scores([*deterministic, *malformed_rows])
+
+    partial_result = runner.run_command(
+        replace(
+            judge_config,
+            command=(
+                sys.executable,
+                "-c",
+                "import json; print(json.dumps({'axes': {}, 'overall_explanation': 'partial'}))",
+            ),
+            expect_json=True,
+        )
+    )
+    assert partial_result.status == "completed"
+    monkeypatch.setattr(judge, "run_command", lambda _: partial_result)
+    partial_rows = judge.judge_pairs(case, baseline, candidate, judge_config)
+    assert all(row["status"] == "invalid" for row in partial_rows)
+    assert evals.validate_external_scores(partial_rows)
+    with pytest.raises(ValueError, match="invalid external score"):
+        evals.aggregate_scores([*deterministic, *partial_rows])

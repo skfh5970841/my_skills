@@ -25,6 +25,22 @@ AXES = (
 )
 
 SPLITS = frozenset({"dev", "golden", "holdout"})
+MIN_PARTIAL_LEAK_CHARACTERS = 16
+GENERATOR_VISIBLE_FIELDS = frozenset(
+    {
+        "prompt",
+        "input",
+        "loaded_references",
+        "loaded_reference_paths",
+        "loaded_reference_content",
+        "reference_material",
+        "reference_materials",
+        "reference_text",
+        "references",
+        "research_card",
+        "research_cards",
+    }
+)
 
 _REQUIRED_FIELDS = frozenset(
     {
@@ -56,17 +72,50 @@ _SEQUENCE_CHECKS = frozenset(
 _INTEGER_CHECKS = frozenset(
     {"min_characters", "max_characters", "max_source_overlap_characters"}
 )
-_TARGET_SKILL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_TARGET_SKILL_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+_CASE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_CHECK_AXES = {
+    "output_present": "request_fulfillment",
+    "required_terms": "request_fulfillment",
+    "forbidden_terms": "request_fulfillment",
+    "checklist_items": "request_fulfillment",
+    "exact_facts": "meaning_and_facts",
+    "min_characters": "structure_and_information",
+    "max_characters": "structure_and_information",
+    "max_source_overlap_characters": "over_imitation",
+}
+_GENERATION_PARITY_FIELDS = (
+    "case_id",
+    "target_skill",
+    "repeat",
+    "model",
+    "reasoning",
+    "runtime",
+    "input",
+    "prompt",
+)
 
 
-def _has_control_characters(value: str) -> bool:
-    return any(unicodedata.category(character).startswith("C") for character in value)
+def _has_control_characters(value: str, *, allow_narrative_layout: bool) -> bool:
+    allowed = {"\t", "\n", "\r"} if allow_narrative_layout else set()
+    return any(
+        character not in allowed
+        and unicodedata.category(character).startswith("C")
+        for character in value
+    )
 
 
-def _required_text(value: object, field: str, *, identifier: bool = False) -> str:
+def _required_text(
+    value: object,
+    field: str,
+    *,
+    identifier: bool = False,
+    narrative: bool = False,
+) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be a non-empty string")
-    if _has_control_characters(value):
+    if _has_control_characters(value, allow_narrative_layout=narrative):
         raise ValueError(f"{field} contains a control character")
     if identifier and (value != value.strip() or any(character.isspace() for character in value)):
         raise ValueError(f"{field} must be a safe identifier")
@@ -111,8 +160,13 @@ def _strict_json_loads(text: str) -> object:
 def _normalize_string_sequence(value: object, field: str) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)):
         raise TypeError(f"{field} must be a list of strings")
+    if not value:
+        raise ValueError(f"{field} must not be empty")
     normalized = tuple(_required_text(item, field) for item in value)
-    if len(set(normalized)) != len(normalized):
+    comparison_values = tuple(_normalize_text(item) for item in normalized)
+    if any(not item for item in comparison_values):
+        raise ValueError(f"{field} values must contain normalized text")
+    if len(set(comparison_values)) != len(comparison_values):
         raise ValueError(f"{field} contains duplicate values")
     return normalized
 
@@ -124,6 +178,8 @@ def _normalize_checks(value: object) -> Mapping[str, object]:
     unknown = set(value) - _CHECK_KEYS
     if unknown:
         raise ValueError(f"unknown deterministic check(s): {', '.join(sorted(unknown))}")
+    if not value:
+        raise ValueError("deterministic_checks must not be empty")
 
     checks: dict[str, object] = {}
     for key, raw_value in value.items():
@@ -132,13 +188,13 @@ def _normalize_checks(value: object) -> Mapping[str, object]:
         elif key in _INTEGER_CHECKS:
             if isinstance(raw_value, bool) or not isinstance(raw_value, int):
                 raise TypeError(f"{key} must be an integer")
-            if raw_value < 0:
-                raise ValueError(f"{key} must be non-negative")
+            if raw_value <= 0:
+                raise ValueError(f"{key} must be a positive non-vacuous threshold")
             checks[key] = raw_value
         elif key == "output_present":
-            if not isinstance(raw_value, bool):
-                raise TypeError("output_present must be a boolean")
-            checks[key] = raw_value
+            if raw_value is not True:
+                raise ValueError("output_present must be exactly true")
+            checks[key] = True
 
     minimum = checks.get("min_characters")
     maximum = checks.get("max_characters")
@@ -178,13 +234,22 @@ class EvalCase:
             raise ValueError(f"unknown evaluation field(s): {', '.join(sorted(unknown))}")
 
         case_id = _required_text(data["case_id"], "case_id", identifier=True)
+        if _CASE_ID_RE.fullmatch(case_id) is None or case_id in {".", ".."}:
+            raise ValueError("case_id must be a safe non-path identifier")
         target_skill = _required_text(
             data["target_skill"], "target_skill", identifier=True
         )
-        if not _TARGET_SKILL_RE.fullmatch(target_skill):
-            raise ValueError("target_skill must be a safe skill name, not a path")
+        if not 1 <= len(target_skill) <= 64 or not _TARGET_SKILL_RE.fullmatch(
+            target_skill
+        ):
+            raise ValueError(
+                "target_skill must be 1..64 lowercase alphanumeric characters "
+                "in single-hyphen-separated segments"
+            )
         source_group = _required_text(data["source_group"], "source_group")
-        generator_brief = _required_text(data["generator_brief"], "generator_brief")
+        generator_brief = _required_text(
+            data["generator_brief"], "generator_brief", narrative=True
+        )
         risk = _required_text(data["risk"], "risk")
 
         raw_axes = data["axes"]
@@ -204,12 +269,57 @@ class EvalCase:
         evaluator_reference = (
             None
             if raw_reference is None
-            else _required_text(raw_reference, "evaluator_reference")
+            else _required_text(
+                raw_reference, "evaluator_reference", narrative=True
+            )
         )
         if "max_source_overlap_characters" in checks and evaluator_reference is None:
             raise ValueError(
                 "evaluator_reference is required for max_source_overlap_characters"
             )
+        if evaluator_reference is not None and "max_source_overlap_characters" in checks:
+            normalized_reference_length = len(_normalize_text(evaluator_reference))
+            if checks["max_source_overlap_characters"] >= normalized_reference_length:
+                raise ValueError(
+                    "max_source_overlap_characters must be below the normalized "
+                    "evaluator_reference length to avoid a vacuous overlap gate"
+                )
+
+        for check in checks:
+            required_axis = _CHECK_AXES[check]
+            if required_axis not in axes:
+                raise ValueError(
+                    f"deterministic check {check} requires axis {required_axis}"
+                )
+
+        forbidden = {
+            _normalize_text(term) for term in checks.get("forbidden_terms", ())
+        }
+        positive = {
+            _normalize_text(term)
+            for key in ("required_terms", "exact_facts", "checklist_items")
+            for term in checks.get(key, ())
+        }
+        contradictions = forbidden & positive
+        if contradictions:
+            raise ValueError(
+                "deterministic check contradiction: positive and forbidden terms overlap"
+            )
+        maximum_characters = checks.get("max_characters")
+        if maximum_characters is not None:
+            longest_required_literal = max(
+                (
+                    len(term)
+                    for key in ("required_terms", "exact_facts", "checklist_items")
+                    for term in checks.get(key, ())
+                ),
+                default=0,
+            )
+            if longest_required_literal > maximum_characters:
+                raise ValueError(
+                    "max_characters creates an impossible length threshold for a "
+                    "required literal"
+                )
 
         return cls(
             case_id=case_id,
@@ -282,14 +392,39 @@ def _jaccard(left: set[str], right: set[str]) -> float:
     return len(left & right) / len(left | right)
 
 
+def _edit_similarity(left: str, right: str) -> float:
+    """Return deterministic normalized Levenshtein similarity."""
+
+    if left == right:
+        return 1.0
+    if not left or not right:
+        return 0.0
+    previous = list(range(len(right) + 1))
+    for left_index, left_character in enumerate(left, start=1):
+        current = [left_index]
+        for right_index, right_character in enumerate(right, start=1):
+            current.append(
+                min(
+                    current[-1] + 1,
+                    previous[right_index] + 1,
+                    previous[right_index - 1]
+                    + (left_character != right_character),
+                )
+            )
+        previous = current
+    return 1.0 - previous[-1] / max(len(left), len(right))
+
+
 def validate_split_isolation(
     splits: Mapping[str, Sequence[EvalCase]],
 ) -> list[str]:
-    """Collect all cross-split identity, source, and content leakage errors."""
+    """Collect dataset duplicates and cross-split source/content leakage errors."""
 
     errors: list[str] = []
     records: list[tuple[str, EvalCase]] = []
     for split, cases in splits.items():
+        if split not in SPLITS:
+            errors.append(f"unknown split key: {split!r}")
         for case in cases:
             records.append((split, case))
             if case.split != split:
@@ -297,26 +432,28 @@ def validate_split_isolation(
                     f"case {case.case_id} records split {case.split!r} but is in {split!r}"
                 )
 
-    def report_spanning(field: str) -> None:
+    def report_duplicates(field: str) -> None:
         occurrences: dict[str, list[tuple[str, str]]] = defaultdict(list)
         for split, case in records:
             occurrences[getattr(case, field)].append((split, case.case_id))
         for value, locations in occurrences.items():
-            distinct_splits = {split for split, _ in locations}
-            if len(distinct_splits) > 1:
-                if field == "case_id":
-                    errors.append(
-                        f"duplicate case_id across splits: {value} in "
-                        + ", ".join(sorted(distinct_splits))
-                    )
-                else:
-                    errors.append(
-                        f"{field} spans splits: {value} in "
-                        + ", ".join(sorted(distinct_splits))
-                    )
+            if len(locations) > 1:
+                errors.append(
+                    f"duplicate {field} in dataset: {value} at "
+                    + ", ".join(f"{split}/{case_id}" for split, case_id in locations)
+                )
 
-    report_spanning("case_id")
-    report_spanning("source_group")
+    report_duplicates("case_id")
+
+    source_occurrences: dict[str, set[str]] = defaultdict(set)
+    for split, case in records:
+        source_occurrences[case.source_group].add(split)
+    for source_group, source_splits in source_occurrences.items():
+        if len(source_splits) > 1:
+            errors.append(
+                f"source_group spans splits: {source_group} in "
+                + ", ".join(sorted(source_splits))
+            )
 
     for field in ("generator_brief", "evaluator_reference"):
         values: list[tuple[str, EvalCase, str]] = []
@@ -328,23 +465,58 @@ def validate_split_isolation(
         for (left_split, left_case, left), (right_split, right_case, right) in combinations(
             values, 2
         ):
-            if left_split == right_split:
-                continue
             if left == right:
                 errors.append(
-                    f"duplicate normalized {field} across splits: "
+                    f"duplicate normalized {field} in dataset: "
                     f"{left_case.case_id} ({left_split}) and "
                     f"{right_case.case_id} ({right_split})"
                 )
 
-            similarity = _jaccard(_character_ngrams(left), _character_ngrams(right))
-            if similarity >= 0.85:
+            left_ngrams = _character_ngrams(left)
+            right_ngrams = _character_ngrams(right)
+            similarity = _jaccard(left_ngrams, right_ngrams)
+            if left_ngrams and right_ngrams and similarity >= 0.85:
                 errors.append(
-                    f"8-gram {field} similarity {similarity:.3f} across splits: "
+                    f"8-gram {field} similarity {similarity:.3f} in dataset: "
                     f"{left_case.case_id} ({left_split}) and "
                     f"{right_case.case_id} ({right_split})"
                 )
+            elif min(len(left), len(right)) >= 4 and (
+                not left_ngrams or not right_ngrams
+            ):
+                short_similarity = _edit_similarity(left, right)
+                if short_similarity >= 0.85:
+                    errors.append(
+                        f"short-text {field} similarity {short_similarity:.3f} in dataset: "
+                        f"{left_case.case_id} ({left_split}) and "
+                        f"{right_case.case_id} ({right_split})"
+                    )
 
+    return errors
+
+
+def validate_case_targets(cases: Iterable[EvalCase], registry: object) -> list[str]:
+    """Validate that every case targets a skill declared by a family registry."""
+
+    skills = getattr(registry, "skills", None)
+    if not isinstance(skills, (list, tuple)):
+        raise TypeError("registry must expose a skills sequence")
+    names: set[str] = set()
+    for skill in skills:
+        name = getattr(skill, "name", None)
+        if not isinstance(name, str) or not name:
+            raise TypeError("registry skills must expose non-empty names")
+        names.add(name)
+
+    errors: list[str] = []
+    for case in cases:
+        if not isinstance(case, EvalCase):
+            raise TypeError("cases must contain EvalCase values")
+        if case.target_skill not in names:
+            errors.append(
+                f"case {case.case_id} target_skill is not in family registry: "
+                f"{case.target_skill}"
+            )
     return errors
 
 
@@ -359,10 +531,27 @@ def _iter_string_values(value: object) -> Iterable[str]:
             yield from _iter_string_values(nested)
 
 
+def _maximum_reference_window_jaccard(reference: str, visible: str) -> float:
+    reference_ngrams = _character_ngrams(reference)
+    if not reference_ngrams or len(visible) < 8:
+        return 0.0
+    if len(visible) <= len(reference):
+        return _jaccard(reference_ngrams, _character_ngrams(visible))
+
+    window_size = len(reference)
+    return max(
+        _jaccard(
+            reference_ngrams,
+            _character_ngrams(visible[start : start + window_size]),
+        )
+        for start in range(len(visible) - window_size + 1)
+    )
+
+
 def validate_holdout_leakage(
     holdout_cases: Sequence[EvalCase], generation_rows: Iterable[dict]
 ) -> list[str]:
-    """Find evaluator-only holdout references embedded in generation records."""
+    """Scan only explicitly generator-visible fields for holdout reference leaks."""
 
     references = [
         (case.case_id, _normalize_text(case.evaluator_reference))
@@ -371,11 +560,39 @@ def validate_holdout_leakage(
     ]
     errors: list[str] = []
     for row_number, row in enumerate(generation_rows, start=1):
-        normalized_values = [_normalize_text(value) for value in _iter_string_values(row)]
+        if not isinstance(row, Mapping):
+            errors.append(f"row {row_number} must be a generation mapping")
+            continue
+        visible_values = [
+            (field, _normalize_text(value))
+            for field in GENERATOR_VISIBLE_FIELDS
+            if field in row
+            for value in _iter_string_values(row[field])
+        ]
         for case_id, reference in references:
-            if reference and any(reference in value for value in normalized_values):
+            if not reference:
+                continue
+            finding: tuple[str, str] | None = None
+            for field, visible in visible_values:
+                if reference in visible:
+                    finding = (field, "full normalized")
+                    break
+                similarity = _maximum_reference_window_jaccard(reference, visible)
+                if similarity >= 0.85:
+                    finding = (field, f"8-gram similarity {similarity:.3f}")
+                    break
+                longest = _longest_common_substring_length(reference, visible)
+                if longest >= MIN_PARTIAL_LEAK_CHARACTERS:
+                    finding = (
+                        field,
+                        f"partial contiguous excerpt of {longest} normalized characters",
+                    )
+                    break
+            if finding is not None:
+                field, reason = finding
                 errors.append(
-                    f"row {row_number} leaks evaluator_reference for holdout case {case_id}"
+                    f"row {row_number} {field} leaks evaluator_reference for holdout "
+                    f"case {case_id}: {reason}"
                 )
                 break
     return errors
@@ -496,6 +713,129 @@ def score_deterministic(case: EvalCase, output: str) -> dict[str, dict]:
     return scores
 
 
+def _stable_hash(value: Mapping[str, object]) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def validate_generation_row(
+    case: EvalCase, row: Mapping[str, object], label: str = "generation"
+) -> None:
+    """Validate one completed, source-stable generation record."""
+
+    if not isinstance(row, Mapping):
+        raise TypeError(f"{label} row must be a mapping")
+    if row.get("status") != "completed":
+        raise ValueError(f"{label} status must be completed")
+    if row.get("source_stable") is not True:
+        raise ValueError(f"{label} source must be stable")
+    if row.get("case_id") != case.case_id:
+        raise ValueError(f"{label} case_id must match EvalCase")
+    if row.get("target_skill") != case.target_skill:
+        raise ValueError(f"{label} target_skill must match EvalCase")
+
+    repeat = row.get("repeat")
+    if isinstance(repeat, bool) or not isinstance(repeat, int) or repeat < 0:
+        raise ValueError(f"{label} repeat must be a non-negative integer")
+    if row.get("input") != case.generator_brief:
+        raise ValueError(f"{label} input must match EvalCase generator_brief")
+    for field in ("prompt", "output", "stderr", "cwd", "model", "reasoning", "runtime"):
+        value = row.get(field)
+        if not isinstance(value, str):
+            raise TypeError(f"{label} {field} must be a string")
+        if field not in {"stderr"} and not value.strip():
+            raise ValueError(f"{label} {field} must be non-empty")
+
+    command = row.get("command")
+    if not isinstance(command, (list, tuple)) or not command or not all(
+        isinstance(part, str) and part for part in command
+    ):
+        raise ValueError(f"{label} command must be a non-empty string sequence")
+    timeout_seconds = row.get("timeout_seconds")
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, int)
+        or timeout_seconds <= 0
+    ):
+        raise ValueError(f"{label} timeout_seconds must be a positive integer")
+    elapsed_ms = row.get("elapsed_ms")
+    if isinstance(elapsed_ms, bool) or not isinstance(elapsed_ms, int) or elapsed_ms < 0:
+        raise ValueError(f"{label} elapsed_ms must be a non-negative integer")
+    returncode = row.get("returncode")
+    if isinstance(returncode, bool) or not isinstance(returncode, int) or returncode != 0:
+        raise ValueError(f"{label} returncode must be zero")
+
+
+def generation_parity_signature(case: EvalCase, row: Mapping[str, object]) -> str:
+    validate_generation_row(case, row)
+    return _stable_hash({field: row[field] for field in _GENERATION_PARITY_FIELDS})
+
+
+def _pair_id_from_fields(
+    case_id: str,
+    target_skill: str,
+    split: str,
+    repeat: int,
+    parity_signature: str,
+) -> str:
+    return _stable_hash(
+        {
+            "case_id": case_id,
+            "target_skill": target_skill,
+            "split": split,
+            "repeat": repeat,
+            "parity_signature": parity_signature,
+        }
+    )
+
+
+def generation_pair_id(
+    case: EvalCase, repeat: int, parity_signature: str
+) -> str:
+    if isinstance(repeat, bool) or not isinstance(repeat, int) or repeat < 0:
+        raise ValueError("repeat must be a non-negative integer")
+    if not isinstance(parity_signature, str) or _SHA256_RE.fullmatch(
+        parity_signature
+    ) is None:
+        raise ValueError("parity_signature must be a SHA-256 hex digest")
+    return _pair_id_from_fields(
+        case.case_id,
+        case.target_skill,
+        case.split,
+        repeat,
+        parity_signature,
+    )
+
+
+def make_deterministic_row(
+    case: EvalCase, generation_row: Mapping[str, object], condition: str
+) -> dict:
+    """Create one typed deterministic gate row from an auditable generation row."""
+
+    if condition not in {"baseline", "candidate"}:
+        raise ValueError("condition must be baseline or candidate")
+    validate_generation_row(case, generation_row, condition)
+    parity_signature = generation_parity_signature(case, generation_row)
+    repeat = generation_row["repeat"]
+    return {
+        "row_type": "deterministic",
+        "case_id": case.case_id,
+        "target_skill": case.target_skill,
+        "split": case.split,
+        "condition": condition,
+        "repeat": repeat,
+        "pair_id": generation_pair_id(case, repeat, parity_signature),
+        "parity_signature": parity_signature,
+        "scores": score_deterministic(case, generation_row["output"]),
+    }
+
+
 def _nonfinite_paths(value: object, path: str = "row") -> list[str]:
     errors: list[str] = []
     if isinstance(value, float) and not math.isfinite(value):
@@ -513,8 +853,14 @@ def validate_external_scores(rows: Iterable[dict]) -> list[str]:
     """Validate judge rows; invalid or incomplete results are never numeric zeros."""
 
     errors: list[str] = []
-    required = {
+    common_required = {
+        "row_type",
         "case_id",
+        "target_skill",
+        "split",
+        "repeat",
+        "pair_id",
+        "parity_signature",
         "rubric_version",
         "order",
         "role",
@@ -523,12 +869,22 @@ def validate_external_scores(rows: Iterable[dict]) -> list[str]:
         "candidate_length",
         "model",
         "reasoning",
+        "runtime",
+        "command",
+        "cwd",
+        "timeout_seconds",
+        "returncode",
+        "elapsed_ms",
+        "prompt_sha256",
         "raw_output",
+        "stderr",
         "label_map",
+    }
+    valid_required = {
         "axis_results",
         "overall_explanation",
     }
-    allowed = required | {"stderr", "validation_errors"}
+    allowed = common_required | valid_required | {"validation_errors"}
 
     for index, row in enumerate(rows):
         prefix = f"row {index + 1}"
@@ -538,10 +894,7 @@ def validate_external_scores(rows: Iterable[dict]) -> list[str]:
         errors.extend(_nonfinite_paths(row, prefix))
 
         status = row.get("status")
-        if status != "valid":
-            errors.append(f"{prefix} has invalid external score status: {status!r}")
-            continue
-
+        required = common_required | (valid_required if status == "valid" else set())
         missing = required - set(row)
         if missing:
             errors.append(f"{prefix} missing values: {', '.join(sorted(missing))}")
@@ -549,18 +902,76 @@ def validate_external_scores(rows: Iterable[dict]) -> list[str]:
         if unknown:
             errors.append(f"{prefix} has unknown values: {', '.join(sorted(unknown))}")
 
-        for key in ("case_id", "rubric_version", "model", "reasoning", "raw_output"):
+        for key in (
+            "case_id",
+            "target_skill",
+            "rubric_version",
+            "model",
+            "reasoning",
+            "runtime",
+            "cwd",
+        ):
             if not isinstance(row.get(key), str) or not row[key].strip():
                 errors.append(f"{prefix}.{key} must be a non-empty string")
+        if row.get("row_type") != "judge":
+            errors.append(f"{prefix}.row_type must be judge")
+        if row.get("split") not in SPLITS:
+            errors.append(f"{prefix}.split is invalid")
+        for key in ("repeat", "baseline_length", "candidate_length", "elapsed_ms"):
+            value = row.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                errors.append(f"{prefix}.{key} must be a non-negative integer")
+        timeout = row.get("timeout_seconds")
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
+            errors.append(f"{prefix}.timeout_seconds must be a positive integer")
+        returncode = row.get("returncode")
+        if returncode is not None and (
+            isinstance(returncode, bool) or not isinstance(returncode, int)
+        ):
+            errors.append(f"{prefix}.returncode must be an integer or null")
+        if status == "valid" and returncode != 0:
+            errors.append(f"{prefix}.returncode must be zero for a valid row")
+        command = row.get("command")
+        if not isinstance(command, (list, tuple)) or not command or not all(
+            isinstance(part, str) and part for part in command
+        ):
+            errors.append(f"{prefix}.command must be a non-empty string sequence")
+        if not isinstance(row.get("stderr"), str):
+            errors.append(f"{prefix}.stderr must be a string")
+        if not isinstance(row.get("raw_output"), str):
+            errors.append(f"{prefix}.raw_output must be a string")
+        elif status == "valid" and not row["raw_output"].strip():
+            errors.append(f"{prefix}.raw_output must be non-empty for a valid row")
+        for key in ("pair_id", "parity_signature", "prompt_sha256"):
+            value = row.get(key)
+            if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+                errors.append(f"{prefix}.{key} must be a SHA-256 hex digest")
+        if (
+            isinstance(row.get("case_id"), str)
+            and isinstance(row.get("target_skill"), str)
+            and row.get("split") in SPLITS
+            and isinstance(row.get("repeat"), int)
+            and not isinstance(row.get("repeat"), bool)
+            and isinstance(row.get("parity_signature"), str)
+            and _SHA256_RE.fullmatch(row["parity_signature"]) is not None
+            and isinstance(row.get("pair_id"), str)
+            and row["pair_id"]
+            != _pair_id_from_fields(
+                row["case_id"],
+                row["target_skill"],
+                row["split"],
+                row["repeat"],
+                row["parity_signature"],
+            )
+        ):
+            errors.append(f"{prefix}.pair_id does not match pair identity")
+        if row.get("runtime") != "codex":
+            errors.append(f"{prefix}.runtime must be codex")
         if row.get("role") != "supporting_only":
             errors.append(f"{prefix}.role must be supporting_only")
         order = row.get("order")
         if order not in {"AB", "BA"}:
             errors.append(f"{prefix}.order must be AB or BA")
-        for key in ("baseline_length", "candidate_length"):
-            value = row.get(key)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                errors.append(f"{prefix}.{key} must be a non-negative integer")
 
         expected_label_map = (
             {"A": "baseline", "B": "candidate"}
@@ -569,6 +980,21 @@ def validate_external_scores(rows: Iterable[dict]) -> list[str]:
         )
         if order in {"AB", "BA"} and row.get("label_map") != expected_label_map:
             errors.append(f"{prefix}.label_map does not match order {order}")
+
+        if "validation_errors" in row:
+            validation_errors = row["validation_errors"]
+            if status == "valid":
+                errors.append(f"{prefix}.validation_errors is forbidden on valid rows")
+            if not isinstance(validation_errors, list) or not validation_errors or not all(
+                isinstance(error, str) and error.strip() for error in validation_errors
+            ):
+                errors.append(
+                    f"{prefix}.validation_errors must be a non-empty string list"
+                )
+
+        if status != "valid":
+            errors.append(f"{prefix} has invalid external score status: {status!r}")
+            continue
 
         axis_results = row.get("axis_results")
         if not isinstance(axis_results, Mapping):
@@ -600,44 +1026,286 @@ def validate_external_scores(rows: Iterable[dict]) -> list[str]:
     return errors
 
 
-def aggregate_scores(rows: Iterable[dict]) -> dict:
-    """Aggregate valid supporting judge rows while exposing order disagreement."""
+def _validate_deterministic_row(row: Mapping[str, object], index: int) -> list[str]:
+    prefix = f"deterministic row {index + 1}"
+    required = {
+        "row_type",
+        "case_id",
+        "target_skill",
+        "split",
+        "condition",
+        "repeat",
+        "pair_id",
+        "parity_signature",
+        "scores",
+    }
+    errors = _nonfinite_paths(row, prefix)
+    missing = required - set(row)
+    unknown = set(row) - required
+    if missing:
+        errors.append(f"{prefix} missing values: {', '.join(sorted(missing))}")
+    if unknown:
+        errors.append(f"{prefix} has unknown values: {', '.join(sorted(unknown))}")
+    if row.get("row_type") != "deterministic":
+        errors.append(f"{prefix}.row_type must be deterministic")
+    for key in ("case_id", "target_skill"):
+        if not isinstance(row.get(key), str) or not row[key].strip():
+            errors.append(f"{prefix}.{key} must be a non-empty string")
+    if row.get("split") not in SPLITS:
+        errors.append(f"{prefix}.split is invalid")
+    if row.get("condition") not in {"baseline", "candidate"}:
+        errors.append(f"{prefix}.condition is invalid")
+    repeat = row.get("repeat")
+    if isinstance(repeat, bool) or not isinstance(repeat, int) or repeat < 0:
+        errors.append(f"{prefix}.repeat must be a non-negative integer")
+    for key in ("pair_id", "parity_signature"):
+        value = row.get(key)
+        if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+            errors.append(f"{prefix}.{key} must be a SHA-256 hex digest")
+    if (
+        isinstance(row.get("case_id"), str)
+        and isinstance(row.get("target_skill"), str)
+        and row.get("split") in SPLITS
+        and isinstance(repeat, int)
+        and not isinstance(repeat, bool)
+        and isinstance(row.get("parity_signature"), str)
+        and _SHA256_RE.fullmatch(row["parity_signature"]) is not None
+        and isinstance(row.get("pair_id"), str)
+        and row["pair_id"]
+        != _pair_id_from_fields(
+            row["case_id"],
+            row["target_skill"],
+            row["split"],
+            repeat,
+            row["parity_signature"],
+        )
+    ):
+        errors.append(f"{prefix}.pair_id does not match pair identity")
 
-    materialized = list(rows)
-    validation_errors = validate_external_scores(materialized)
+    scores = row.get("scores")
+    if not isinstance(scores, Mapping) or set(scores) != set(AXES):
+        errors.append(f"{prefix}.scores must contain exactly six axes")
+    else:
+        for axis in AXES:
+            result = scores[axis]
+            if not isinstance(result, Mapping) or set(result) != {
+                "passed",
+                "status",
+                "evidence",
+            }:
+                errors.append(f"{prefix}.scores.{axis} has an invalid schema")
+                continue
+            passed = result["passed"]
+            status = result["status"]
+            if status == "scored" and not isinstance(passed, bool):
+                errors.append(f"{prefix}.scores.{axis}.passed must be boolean")
+            elif status == "not_scored" and passed is not None:
+                errors.append(f"{prefix}.scores.{axis}.passed must be null")
+            elif status not in {"scored", "not_scored"}:
+                errors.append(f"{prefix}.scores.{axis}.status is invalid")
+            if not isinstance(result["evidence"], Mapping):
+                errors.append(f"{prefix}.scores.{axis}.evidence must be an object")
+    return errors
+
+
+def _empty_judge_aggregate() -> dict:
+    return {
+        "role": "supporting_only",
+        "row_count": 0,
+        "pair_count": 0,
+        "axes": {
+            axis: {"baseline": 0, "candidate": 0, "tie": 0, "count": 0}
+            for axis in AXES
+        },
+        "ab_ba_disagreement": {
+            axis: {"compared_pairs": 0, "disagreements": 0} for axis in AXES
+        },
+    }
+
+
+def _aggregate_judge_rows(rows: list[dict], deterministic_pairs: Mapping[str, dict]) -> dict:
+    if not rows:
+        return _empty_judge_aggregate()
+    validation_errors = validate_external_scores(rows)
     if validation_errors:
         raise ValueError("invalid external score: " + "; ".join(validation_errors))
 
-    axes = {
-        axis: {"baseline": 0, "candidate": 0, "tie": 0, "count": 0}
-        for axis in AXES
-    }
-    by_case: dict[str, dict[str, list[dict]]] = defaultdict(
+    grouped: dict[str, dict[str, list[dict]]] = defaultdict(
         lambda: {"AB": [], "BA": []}
     )
-    for row in materialized:
-        by_case[row["case_id"]][row["order"]].append(row)
+    for row in rows:
+        pair_id = row["pair_id"]
+        if pair_id not in deterministic_pairs:
+            raise ValueError(
+                f"invalid external score: judge pair_id has no deterministic pair: {pair_id}"
+            )
+        deterministic = deterministic_pairs[pair_id]
+        for field in (
+            "case_id",
+            "target_skill",
+            "split",
+            "repeat",
+            "parity_signature",
+        ):
+            if row[field] != deterministic[field]:
+                raise ValueError(
+                    f"invalid external score: judge {field} does not match deterministic pair"
+                )
+        grouped[pair_id][row["order"]].append(row)
+
+    summary = _empty_judge_aggregate()
+    summary["row_count"] = len(rows)
+    summary["pair_count"] = len(grouped)
+    for pair_id, orders in grouped.items():
+        if len(orders["AB"]) != 1 or len(orders["BA"]) != 1:
+            raise ValueError(
+                f"invalid external score: pair_id {pair_id} requires exactly one AB and BA row"
+            )
+        ab_row, ba_row = orders["AB"][0], orders["BA"][0]
+        for field in (
+            "case_id",
+            "target_skill",
+            "split",
+            "repeat",
+            "pair_id",
+            "parity_signature",
+            "rubric_version",
+            "model",
+            "reasoning",
+            "runtime",
+            "command",
+            "cwd",
+            "timeout_seconds",
+        ):
+            if ab_row[field] != ba_row[field]:
+                raise ValueError(
+                    f"invalid external score: AB/BA provenance mismatch for {field}"
+                )
         for axis in AXES:
-            winner = row["axis_results"][axis]["winner"]
-            axes[axis][winner] += 1
-            axes[axis]["count"] += 1
+            for row in (ab_row, ba_row):
+                winner = row["axis_results"][axis]["winner"]
+                summary["axes"][axis][winner] += 1
+                summary["axes"][axis]["count"] += 1
+            summary["ab_ba_disagreement"][axis]["compared_pairs"] += 1
+            if (
+                ab_row["axis_results"][axis]["winner"]
+                != ba_row["axis_results"][axis]["winner"]
+            ):
+                summary["ab_ba_disagreement"][axis]["disagreements"] += 1
+    return summary
 
-    disagreement = {
-        axis: {"compared_pairs": 0, "disagreements": 0} for axis in AXES
+
+def aggregate_scores(rows: Iterable[dict]) -> dict:
+    """Aggregate typed deterministic gates and optional supporting judge pairs."""
+
+    materialized = list(rows)
+    if not materialized:
+        raise ValueError(
+            "at least one complete baseline and candidate deterministic pair is required"
+        )
+    deterministic_rows: list[dict] = []
+    judge_rows: list[dict] = []
+    for row in materialized:
+        if not isinstance(row, Mapping):
+            raise ValueError("invalid external score row type")
+        if row.get("row_type") == "deterministic":
+            deterministic_rows.append(dict(row))
+        elif row.get("row_type") == "judge":
+            judge_rows.append(dict(row))
+        else:
+            raise ValueError("invalid external score row type")
+
+    if not deterministic_rows:
+        raise ValueError(
+            "at least one complete baseline and candidate deterministic pair is required"
+        )
+    deterministic_errors = [
+        error
+        for index, row in enumerate(deterministic_rows)
+        for error in _validate_deterministic_row(row, index)
+    ]
+    if deterministic_errors:
+        raise ValueError("invalid deterministic score: " + "; ".join(deterministic_errors))
+
+    grouped: dict[tuple[str, int], dict[str, dict]] = defaultdict(dict)
+    for row in deterministic_rows:
+        key = (row["case_id"], row["repeat"])
+        condition = row["condition"]
+        if condition in grouped[key]:
+            raise ValueError(
+                f"duplicate deterministic {condition} row for {key[0]} repeat {key[1]}"
+            )
+        grouped[key][condition] = row
+
+    deterministic_pairs: dict[str, dict] = {}
+    for (case_id, repeat), conditions in grouped.items():
+        if set(conditions) != {"baseline", "candidate"}:
+            raise ValueError(
+                "complete baseline and candidate deterministic pair required for "
+                f"{case_id} repeat {repeat}"
+            )
+        baseline = conditions["baseline"]
+        candidate = conditions["candidate"]
+        for field in ("target_skill", "split", "parity_signature", "pair_id"):
+            if baseline[field] != candidate[field]:
+                raise ValueError(
+                    f"deterministic pair parity mismatch for {case_id} repeat {repeat}: {field}"
+                )
+        pair_id = baseline["pair_id"]
+        if pair_id in deterministic_pairs:
+            raise ValueError(f"duplicate deterministic pair_id: {pair_id}")
+        deterministic_pairs[pair_id] = baseline
+
+    axes = {
+        axis: {
+            condition: {"passed": 0, "failed": 0, "not_scored": 0, "count": 0}
+            for condition in ("baseline", "candidate")
+        }
+        for axis in AXES
     }
-    for orders in by_case.values():
-        for ab_row, ba_row in zip(orders["AB"], orders["BA"]):
+    hard_gate_failures: list[dict] = []
+    golden_failures: list[dict] = []
+    hard_gate_axes = ("request_fulfillment", "meaning_and_facts")
+    for row in deterministic_rows:
+        condition = row["condition"]
+        for axis in AXES:
+            passed = row["scores"][axis]["passed"]
+            bucket = "passed" if passed is True else "failed" if passed is False else "not_scored"
+            axes[axis][condition][bucket] += 1
+            axes[axis][condition]["count"] += 1
+        if condition != "candidate":
+            continue
+        for axis in hard_gate_axes:
+            if row["scores"][axis]["passed"] is not True:
+                hard_gate_failures.append(
+                    {
+                        "case_id": row["case_id"],
+                        "split": row["split"],
+                        "repeat": row["repeat"],
+                        "axis": axis,
+                    }
+                )
+        if row["split"] == "golden":
             for axis in AXES:
-                disagreement[axis]["compared_pairs"] += 1
-                if (
-                    ab_row["axis_results"][axis]["winner"]
-                    != ba_row["axis_results"][axis]["winner"]
-                ):
-                    disagreement[axis]["disagreements"] += 1
+                if row["scores"][axis]["passed"] is False:
+                    golden_failures.append(
+                        {
+                            "case_id": row["case_id"],
+                            "split": row["split"],
+                            "repeat": row["repeat"],
+                            "axis": axis,
+                        }
+                    )
 
+    judge = _aggregate_judge_rows(judge_rows, deterministic_pairs)
     return {
-        "role": "supporting_only",
         "row_count": len(materialized),
+        "deterministic_row_count": len(deterministic_rows),
+        "deterministic_pair_count": len(deterministic_pairs),
         "axes": axes,
-        "ab_ba_disagreement": disagreement,
+        "hard_gate_failures": hard_gate_failures,
+        "golden_failures": golden_failures,
+        "hard_gates_passed": not hard_gate_failures,
+        "golden_passed": not golden_failures,
+        "judge": judge,
     }
