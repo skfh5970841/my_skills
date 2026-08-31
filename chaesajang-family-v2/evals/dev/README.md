@@ -21,9 +21,12 @@ generation rows.
 - `max_source_overlap_characters` maps to `over_imitation` and requires an
   evaluator-only reference longer than the threshold.
 
-Sequence checks must be non-empty. Required and forbidden normalized literals
-must not contain one another. A `max_characters` limit must accommodate the
-exact shortest common superstring of all required literals, including overlap.
+Sequence checks must be non-empty. A normalized required, exact-fact, or
+checklist literal must not contain a normalized forbidden term; the reverse is
+satisfiable and allowed. A `max_characters` limit must accommodate the exact
+shortest common superstring of all required literals, including overlap. To
+bound the exponential calculation, at most 12 non-contained literals may remain
+after exact deduplication and containment pruning.
 Thresholds must be positive and possible, and every configured check requires
 its mapped axis. Deterministic rows use
 `row_type: deterministic` and carry case, split, condition, repeat, `pair_id`,

@@ -1253,11 +1253,10 @@ def test_short_text_near_duplicates_are_allowed_only_within_one_split(loop_modul
     "required, forbidden",
     [
         ("핵심 결론", "결론"),
-        ("결론", "핵심 결론"),
         ("핵 심, 결론", "심결"),
     ],
 )
-def test_eval_case_rejects_normalized_required_forbidden_substring_collisions(
+def test_eval_case_rejects_forbidden_substrings_inside_normalized_required_terms(
     loop_modules, required, forbidden
 ):
     evals, _, _ = loop_modules
@@ -1269,6 +1268,26 @@ def test_eval_case_rejects_normalized_required_forbidden_substring_collisions(
 
     with pytest.raises(ValueError, match="contradiction"):
         evals.EvalCase.from_dict(data, "dev")
+
+
+def test_required_substring_of_forbidden_term_is_satisfiable(loop_modules):
+    evals, _, _ = loop_modules
+    data = case_data()
+    data["deterministic_checks"] = {
+        "required_terms": ["결론"],
+        "forbidden_terms": ["핵 심, 결론"],
+    }
+
+    case = evals.EvalCase.from_dict(data, "dev")
+    scores = evals.score_deterministic(case, "결론")
+
+    assert scores["request_fulfillment"]["passed"] is True
+    assert scores["request_fulfillment"]["evidence"]["required_terms"] == {
+        "결론": True
+    }
+    assert scores["request_fulfillment"]["evidence"]["forbidden_terms"] == {
+        "핵 심, 결론": False
+    }
 
 
 def test_eval_case_uses_exact_overlapping_superstring_length_for_maximum(loop_modules):
@@ -1299,3 +1318,44 @@ def test_eval_case_superstring_length_accounts_for_contained_literals(loop_modul
     case = evals.EvalCase.from_dict(data, "dev")
 
     assert case.deterministic_checks["max_characters"] == 7
+
+
+def test_eval_case_allows_twelve_noncontained_superstring_literals(loop_modules):
+    evals, _, _ = loop_modules
+    data = case_data()
+    data["deterministic_checks"] = {
+        "required_terms": [f"token-{index:02d}" for index in range(12)],
+        "max_characters": 200,
+    }
+
+    case = evals.EvalCase.from_dict(data, "dev")
+
+    assert len(case.deterministic_checks["required_terms"]) == 12
+
+
+def test_eval_case_rejects_more_than_twelve_noncontained_superstring_literals(
+    loop_modules,
+):
+    evals, _, _ = loop_modules
+    data = case_data()
+    data["deterministic_checks"] = {
+        "required_terms": [f"token-{index:02d}" for index in range(13)],
+        "max_characters": 300,
+    }
+
+    with pytest.raises(ValueError, match="at most 12|12.*literal|too many"):
+        evals.EvalCase.from_dict(data, "dev")
+
+
+def test_superstring_limit_is_applied_after_containment_pruning(loop_modules):
+    evals, _, _ = loop_modules
+    carrier = "abcdefghijklmnopqrstuvwx"
+    data = case_data()
+    data["deterministic_checks"] = {
+        "required_terms": [carrier, *(carrier[:length] for length in range(2, 15))],
+        "max_characters": len(carrier),
+    }
+
+    case = evals.EvalCase.from_dict(data, "dev")
+
+    assert len(case.deterministic_checks["required_terms"]) == 14

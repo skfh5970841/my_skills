@@ -26,6 +26,8 @@ AXES = (
 
 SPLITS = frozenset({"dev", "golden", "holdout"})
 MIN_PARTIAL_LEAK_CHARACTERS = 16
+# Exact shortest-common-superstring DP is exponential after containment pruning.
+MAX_SCS_LITERALS = 12
 GENERATOR_VISIBLE_FIELDS = frozenset(
     {
         "prompt",
@@ -150,6 +152,11 @@ def _shortest_common_superstring_length(values: Iterable[str]) -> int:
             for other_index, other in enumerate(unique)
         )
     ]
+    if len(literals) > MAX_SCS_LITERALS:
+        raise ValueError(
+            "shortest common superstring accepts at most "
+            f"{MAX_SCS_LITERALS} non-contained required literals"
+        )
     if not literals:
         return 0
     if len(literals) == 1:
@@ -365,12 +372,12 @@ class EvalCase:
             (positive_term, forbidden_term)
             for positive_term in positive
             for forbidden_term in forbidden
-            if positive_term in forbidden_term or forbidden_term in positive_term
+            if forbidden_term in positive_term
         }
         if contradictions:
             raise ValueError(
-                "deterministic check contradiction: normalized positive and "
-                "forbidden terms have a substring collision"
+                "deterministic check contradiction: a normalized positive "
+                "literal contains a forbidden term"
             )
         maximum_characters = checks.get("max_characters")
         if maximum_characters is not None:
