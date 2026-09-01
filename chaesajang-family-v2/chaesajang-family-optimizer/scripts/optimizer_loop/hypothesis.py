@@ -28,8 +28,12 @@ def canonical_relative_path(value: object, label: str) -> str:
         raise ValueError(f"{label} must be a non-empty POSIX relative path")
     if "\x00" in value:
         raise ValueError(f"{label} must not contain NUL bytes")
+    if value != value.strip():
+        raise ValueError(f"{label} must not have leading or trailing whitespace")
     if "\\" in value:
         raise ValueError(f"{label} must use POSIX separators: {value}")
+    if any(part.endswith((" ", ".")) for part in value.split("/")):
+        raise ValueError(f"{label} path segments must not end in a space or dot")
     path = PurePosixPath(value)
     if path.is_absolute() or path.drive or any(part in {"", ".", ".."} for part in path.parts):
         raise ValueError(f"{label} must not be absolute or escape its root: {value}")

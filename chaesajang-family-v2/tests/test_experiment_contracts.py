@@ -140,10 +140,14 @@ def test_resume_from_blocked_external_returns_only_to_recorded_stage(loop_module
 
 def test_completed_stages_require_only_completed_artifacts(loop_modules):
     artifacts, contracts = loop_modules
-    assert artifacts.required_artifacts(contracts.ExperimentStatus.RESEARCHING, "low") == (
+    assert artifacts.required_artifacts(
+        contracts.ExperimentStatus.RESEARCHING, "low", blind_required=False
+    ) == (
         "manifest.json",
     )
-    assert artifacts.required_artifacts(contracts.ExperimentStatus.CANDIDATE_READY, "low") == (
+    assert artifacts.required_artifacts(
+        contracts.ExperimentStatus.CANDIDATE_READY, "low", blind_required=False
+    ) == (
         "manifest.json",
         "research.jsonl",
         "hypothesis.md",
@@ -151,10 +155,10 @@ def test_completed_stages_require_only_completed_artifacts(loop_modules):
         "candidate.patch",
     )
     assert "candidate.jsonl" not in artifacts.required_artifacts(
-        contracts.ExperimentStatus.CANDIDATE_READY, "low"
+        contracts.ExperimentStatus.CANDIDATE_READY, "low", blind_required=False
     )
     assert "scores.json" not in artifacts.required_artifacts(
-        contracts.ExperimentStatus.CANDIDATE_READY, "low"
+        contracts.ExperimentStatus.CANDIDATE_READY, "low", blind_required=False
     )
 
 
@@ -166,13 +170,74 @@ def test_ready_for_approval_requires_human_files_for_risky_change(tmp_path, loop
     assert "human_ratings.jsonl" in missing
 
 
-def test_low_risk_ready_for_approval_skips_human_files(tmp_path, loop_modules):
+def test_human_review_artifacts_preserve_private_reverification_chain(loop_modules):
+    artifacts, contracts = loop_modules
+    awaiting = artifacts.required_artifacts(
+        contracts.ExperimentStatus.AWAITING_HUMAN, "behavior"
+    )
+    ready = artifacts.required_artifacts(
+        contracts.ExperimentStatus.READY_FOR_APPROVAL, "behavior"
+    )
+
+    assert "blind_pairs.jsonl" in awaiting
+    assert "blind_key.private.json" in awaiting
+    assert "human_ratings.jsonl" not in awaiting
+    assert "blind_review.private.json" not in awaiting
+    assert {
+        "blind_pairs.jsonl",
+        "blind_key.private.json",
+        "human_ratings.jsonl",
+        "blind_review.private.json",
+    }.issubset(ready)
+
+
+def test_explicit_blind_requirement_overrides_low_risk_artifact_shortcut(loop_modules):
+    artifacts, contracts = loop_modules
+    required = artifacts.required_artifacts(
+        contracts.ExperimentStatus.READY_FOR_APPROVAL,
+        "low",
+        blind_required=True,
+    )
+
+    assert "blind_key.private.json" in required
+    assert "blind_review.private.json" in required
+
+
+def test_terminal_context_keeps_private_artifacts_from_last_successful_stage(
+    tmp_path, loop_modules
+):
+    artifacts, contracts = loop_modules
+    awaiting = make_manifest(contracts, status="awaiting_human")
+    invalid = contracts.transition(awaiting, contracts.ExperimentStatus.INVALID)
+
+    missing = artifacts.validate_artifacts(
+        tmp_path, invalid, risk="low", blind_required=True
+    )
+
+    assert "blind_pairs.jsonl" in missing
+    assert "blind_key.private.json" in missing
+
+
+def test_omitted_blind_requirement_is_conservative_and_static_skip_is_explicit(
+    tmp_path, loop_modules
+):
     artifacts, contracts = loop_modules
     manifest = make_manifest(contracts, status="ready_for_approval")
-    required = artifacts.required_artifacts(manifest.status, "low")
-    assert "blind_pairs.jsonl" not in required
-    assert "human_ratings.jsonl" not in required
-    assert artifacts.validate_artifacts(tmp_path, manifest, risk="low") == list(required)
+    conservative = artifacts.required_artifacts(manifest.status, "low")
+    explicit_static = artifacts.required_artifacts(
+        manifest.status, "low", blind_required=False
+    )
+
+    assert "blind_pairs.jsonl" in conservative
+    assert "human_ratings.jsonl" in conservative
+    assert "blind_pairs.jsonl" not in explicit_static
+    assert "human_ratings.jsonl" not in explicit_static
+    assert artifacts.validate_artifacts(tmp_path, manifest, risk="low") == list(
+        conservative
+    )
+    assert artifacts.validate_artifacts(
+        tmp_path, manifest, risk="low", blind_required=False
+    ) == list(explicit_static)
 
 
 def test_write_jsonl_uses_replace_after_writing_a_sibling(tmp_path, loop_modules, monkeypatch):

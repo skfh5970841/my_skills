@@ -912,6 +912,38 @@ def test_make_deterministic_row_is_typed_and_preserves_pair_parity(loop_modules)
     assert candidate_row["condition"] == "candidate"
 
 
+def test_aggregate_generation_commitment_matches_blind_raw_evidence(loop_modules):
+    evals, _, _ = loop_modules
+    from optimizer_loop import blind
+
+    case = eval_case(evals, split="golden")
+    common = {
+        "source_snapshot": {"SKILL.md": "1" * 64},
+        "source_snapshot_after": {"SKILL.md": "1" * 64},
+    }
+    baseline = output_row(
+        "핵심 질문. 결론. 사실 하나.",
+        input=case.generator_brief,
+        **common,
+    )
+    candidate = output_row(
+        "핵심 질문. 결론. 사실 하나. 더 명확한 설명.",
+        input=case.generator_brief,
+        **common,
+    )
+    scores = evals.aggregate_scores(
+        [
+            evals.make_deterministic_row(case, baseline, "baseline"),
+            evals.make_deterministic_row(case, candidate, "candidate"),
+        ],
+        expected_pairs=[expected_pair(case)],
+    )
+
+    assert scores["generation_evidence_digest"] == blind.generation_evidence_digest(
+        [baseline], [candidate]
+    )
+
+
 def test_aggregate_requires_complete_unique_parity_matched_deterministic_pairs(loop_modules):
     evals, _, _ = loop_modules
     case = eval_case(evals)

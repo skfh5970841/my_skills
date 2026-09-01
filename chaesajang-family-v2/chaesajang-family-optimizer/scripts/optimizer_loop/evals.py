@@ -903,6 +903,7 @@ def make_deterministic_row(
         "repeat": repeat,
         "pair_id": generation_pair_id(case, repeat, parity_signature),
         "parity_signature": parity_signature,
+        "generation_sha256": _stable_hash(dict(generation_row)),
         "scores": score_deterministic(case, generation_row["output"]),
     }
 
@@ -1110,9 +1111,10 @@ def _validate_deterministic_row(row: Mapping[str, object], index: int) -> list[s
         "parity_signature",
         "scores",
     }
+    optional = {"generation_sha256"}
     errors = _nonfinite_paths(row, prefix)
     missing = required - set(row)
-    unknown = set(row) - required
+    unknown = set(row) - required - optional
     if missing:
         errors.append(f"{prefix} missing values: {', '.join(sorted(missing))}")
     if unknown:
@@ -1133,6 +1135,10 @@ def _validate_deterministic_row(row: Mapping[str, object], index: int) -> list[s
         value = row.get(key)
         if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
             errors.append(f"{prefix}.{key} must be a SHA-256 hex digest")
+    if "generation_sha256" in row:
+        value = row["generation_sha256"]
+        if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+            errors.append(f"{prefix}.generation_sha256 must be a SHA-256 hex digest")
     if (
         isinstance(row.get("case_id"), str)
         and isinstance(row.get("target_skill"), str)
@@ -1409,6 +1415,33 @@ def aggregate_scores(
             raise ValueError(f"duplicate deterministic pair_id: {pair_id}")
         deterministic_pairs[pair_id] = baseline
 
+    evidence_presence = ["generation_sha256" in row for row in deterministic_rows]
+    if any(evidence_presence) and not all(evidence_presence):
+        raise ValueError("deterministic generation evidence commitments must be complete")
+    generation_evidence_digest = None
+    if all(evidence_presence):
+        evidence_rows = [
+            {
+                "condition": row["condition"],
+                "identity": [row["case_id"], row["target_skill"], row["repeat"]],
+                "sha256": row["generation_sha256"],
+            }
+            for row in deterministic_rows
+        ]
+        generation_evidence_digest = _stable_hash(
+            {
+                "schema_version": 1,
+                "rows": sorted(
+                    evidence_rows,
+                    key=lambda row: (
+                        row["condition"],
+                        tuple(row["identity"]),
+                        row["sha256"],
+                    ),
+                ),
+            }
+        )
+
     expected_inventory = (
         None
         if expected_pairs is None
@@ -1503,7 +1536,7 @@ def aggregate_scores(
     )
 
     judge = _aggregate_judge_rows(judge_rows, deterministic_pairs)
-    return {
+    aggregate = {
         "row_count": len(materialized),
         "deterministic_row_count": len(deterministic_rows),
         "deterministic_pair_count": len(deterministic_pairs),
@@ -1520,3 +1553,6 @@ def aggregate_scores(
         "golden_passed": golden_passed,
         "judge": judge,
     }
+    if generation_evidence_digest is not None:
+        aggregate["generation_evidence_digest"] = generation_evidence_digest
+    return aggregate
