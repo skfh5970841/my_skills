@@ -1,6 +1,7 @@
 import copy
 import dataclasses
 import hashlib
+import html
 import json
 import random
 import re
@@ -220,6 +221,175 @@ def _passing_scores(pair_count=2, *, generation_evidence_digest=None):
     return scores
 
 
+def _test_hash(value):
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _verified_scores_from_aggregate(
+    scores, *, baseline_rows=None, candidate_rows=None
+):
+    from optimizer_loop import evals
+
+    pair_count = scores["expected_pair_count"]
+    if baseline_rows is None or candidate_rows is None:
+        baseline_rows = [
+            _generation_row(
+                f"case-{chr(ord('a') + index)}",
+                0,
+                f"baseline output {index}",
+                brief=f"brief {index}",
+            )
+            for index in range(pair_count)
+        ]
+        candidate_rows = [
+            _generation_row(
+                f"case-{chr(ord('a') + index)}",
+                0,
+                f"candidate output {index}",
+                brief=f"brief {index}",
+            )
+            for index in range(pair_count)
+        ]
+    baseline_by_identity = {
+        (row["case_id"], row["target_skill"], row["repeat"]): row
+        for row in baseline_rows
+    }
+    candidate_by_identity = {
+        (row["case_id"], row["target_skill"], row["repeat"]): row
+        for row in candidate_rows
+    }
+    identities = sorted(baseline_by_identity)
+    if identities != sorted(candidate_by_identity):
+        raise ValueError("test generation identities must match")
+    golden_count = scores["expected_golden_pair_count"]
+    expected = [
+        {
+            "case_id": case_id,
+            "target_skill": target_skill,
+            "split": "golden" if index < golden_count else "dev",
+            "repeat": repeat,
+        }
+        for index, (case_id, target_skill, repeat) in enumerate(identities)
+    ]
+    expected_by_identity = {
+        (row["case_id"], row["target_skill"], row["repeat"]): row
+        for row in expected
+    }
+    declared_failures = {
+        (failure["case_id"], failure["split"], failure["repeat"], failure["axis"])
+        for key in ("hard_gate_failures", "golden_failures")
+        for failure in scores.get(key, [])
+    }
+
+    def axis_values(axis, condition):
+        bucket = scores["axes"][axis][condition]
+        values = [True] * pair_count
+        matching = [
+            index
+            for index, row in enumerate(expected)
+            if (row["case_id"], row["split"], row["repeat"], axis)
+            in declared_failures
+        ]
+        false_needed = bucket["failed"]
+        not_scored_needed = bucket["not_scored"]
+        for index in matching:
+            if not_scored_needed:
+                values[index] = None
+                not_scored_needed -= 1
+            elif false_needed:
+                values[index] = False
+                false_needed -= 1
+        preferred = sorted(
+            (index for index in range(pair_count) if index not in matching),
+            key=lambda index: expected[index]["split"] == "golden",
+        )
+        for index in preferred[:false_needed]:
+            values[index] = False
+        remaining = [index for index in preferred if values[index] is True]
+        for index in remaining[:not_scored_needed]:
+            values[index] = None
+        return values
+
+    per_axis = {
+        axis: {
+            condition: axis_values(axis, condition)
+            for condition in ("baseline", "candidate")
+        }
+        for axis in AXES
+    }
+    rows = []
+    for condition, inventory in (
+        ("baseline", baseline_by_identity),
+        ("candidate", candidate_by_identity),
+    ):
+        for index, identity in enumerate(identities):
+            raw = inventory[identity]
+            expected_row = expected_by_identity[identity]
+            parity_signature = _test_hash(
+                {
+                    field: raw[field]
+                    for field in (
+                        "case_id",
+                        "target_skill",
+                        "repeat",
+                        "model",
+                        "reasoning",
+                        "runtime",
+                        "input",
+                        "prompt",
+                    )
+                }
+            )
+            pair_id = _test_hash(
+                {
+                    **expected_row,
+                    "parity_signature": parity_signature,
+                }
+            )
+            rows.append(
+                {
+                    "row_type": "deterministic",
+                    **expected_row,
+                    "condition": condition,
+                    "pair_id": pair_id,
+                    "parity_signature": parity_signature,
+                    "generation_sha256": _test_hash(raw),
+                    "scores": {
+                        axis: {
+                            "passed": per_axis[axis][condition][index],
+                            "status": (
+                                "not_scored"
+                                if per_axis[axis][condition][index] is None
+                                else "scored"
+                            ),
+                            "evidence": {},
+                        }
+                        for axis in AXES
+                    },
+                }
+            )
+    recomputed = evals.aggregate_scores(rows, expected_pairs=expected)
+    supplied = copy.deepcopy(scores)
+    supplied["generation_evidence_digest"] = recomputed[
+        "generation_evidence_digest"
+    ]
+    return evals.verify_score_evidence(
+        supplied,
+        rows,
+        baseline_rows,
+        candidate_rows,
+        expected_pairs=expected,
+    )
+
+
 def _unblinded_rating(source_pair_id, pair_id, order, *, vote="candidate", **overrides):
     row = {
         "pair_id": pair_id,
@@ -320,11 +490,16 @@ def _decide_v2(
     checked_hypothesis, change, research = _bind_v2_evidence(
         report, checked_manifest, checked_hypothesis
     )
+    supplied_scores = scores if scores is not None else _passing_scores()
+    try:
+        score_evidence = _verified_scores_from_aggregate(supplied_scores)
+    except (TypeError, ValueError, KeyError):
+        score_evidence = supplied_scores
     return report.decide_readiness(
         checked_manifest,
         checked_hypothesis,
         gate if gate is not None else _gate(static_gate),
-        scores if scores is not None else _passing_scores(),
+        score_evidence,
         review,
         change,
         research,
@@ -651,6 +826,9 @@ def test_readiness_rejects_explicit_task7_hard_or_golden_failures(
     scores[flag] = False
     scores[failures_key] = [failure]
     scores["axes"][failure["axis"]]["candidate"] = _axis_bucket(failed=1)
+    if failures_key == "hard_gate_failures":
+        scores["golden_passed"] = False
+        scores["golden_failures"] = [failure]
 
     assert _decide_v2(loop_modules, scores=scores) == "rejected"
 
@@ -902,11 +1080,13 @@ def test_build_report_normalizes_task6_absolute_cd_and_keeps_exact_argv_digest(
 
 def test_rejected_report_lists_static_hard_and_golden_failure_details(loop_modules):
     _, _, _, report, static_gate = loop_modules
+    from optimizer_loop import evals
+
     inputs = _report_inputs(loop_modules)
     failure = {
-        "case_id": "case-gate-detail",
+        "case_id": "case-one",
         "split": "golden",
-        "repeat": 1,
+        "repeat": 0,
         "axis": "meaning_and_facts",
     }
     inputs["gate"] = _gate(
@@ -914,13 +1094,23 @@ def test_rejected_report_lists_static_hard_and_golden_failure_details(loop_modul
         passed=False,
         errors=("chaesajang-style: adapter drift",),
     )
-    inputs["scores"]["axes"]["meaning_and_facts"]["candidate"] = (
-        _axis_bucket(failed=1)
+    scores = evals.verified_score_aggregate(inputs["scores"])
+    scores["axes"]["meaning_and_facts"]["candidate"] = _axis_bucket(failed=1)
+    scores["hard_gate_failures"] = [failure]
+    scores["golden_failures"] = [failure]
+    scores["hard_gates_passed"] = False
+    scores["golden_passed"] = False
+    inputs["scores"] = _verified_scores_from_aggregate(
+        scores,
+        baseline_rows=[
+            _generation_row("case-one", 0, "old one"),
+            _generation_row("case-two", 0, "old two"),
+        ],
+        candidate_rows=[
+            _generation_row("case-two", 0, "new two"),
+            _generation_row("case-one", 0, "new one"),
+        ],
     )
-    inputs["scores"]["hard_gate_failures"] = [failure]
-    inputs["scores"]["golden_failures"] = [failure]
-    inputs["scores"]["hard_gates_passed"] = False
-    inputs["scores"]["golden_passed"] = False
     rendered = report.build_report(**inputs)
 
     assert "### Static Gate Failures" in rendered
@@ -928,7 +1118,7 @@ def test_rejected_report_lists_static_hard_and_golden_failure_details(loop_modul
     assert "adapter drift" in rendered
     assert "### Hard Gate Failures" in rendered
     assert "### Golden Failures" in rendered
-    assert "case-gate-detail" in rendered
+    assert "case-one" in rendered
 
 
 @pytest.mark.parametrize(
@@ -1082,11 +1272,10 @@ def _v2_context(loop_modules, baseline_rows, candidate_rows, *, complete=True):
         "manifest": manifest,
         "hypothesis": hypothesis,
         "gate": _gate(static_gate),
-        "scores": _passing_scores(
-            pair_count=len(baseline_rows),
-            generation_evidence_digest=blind.generation_evidence_digest(
-                baseline_rows, candidate_rows
-            ),
+        "scores": _verified_scores_from_aggregate(
+            _passing_scores(pair_count=len(baseline_rows)),
+            baseline_rows=baseline_rows,
+            candidate_rows=candidate_rows,
         ),
         "review": review,
         "change_assessment": change,
@@ -1285,6 +1474,49 @@ def test_v2_readiness_rejects_review_from_substituted_generation_rows(
         context["hypothesis"],
         context["gate"],
         context["scores"],
+        substituted_review,
+        context["change_assessment"],
+        context["research_evidence"],
+    ) == "invalid"
+
+
+def test_v2_readiness_rejects_rewritten_score_digest_for_substituted_review(
+    loop_modules, baseline_rows, candidate_rows
+):
+    blind, _, _, report, _ = loop_modules
+    from optimizer_loop import evals
+
+    context = _v2_context(loop_modules, baseline_rows, candidate_rows)
+    substituted_baseline = copy.deepcopy(baseline_rows)
+    substituted_candidate = copy.deepcopy(candidate_rows)
+    for row in substituted_baseline:
+        row["output"] = f"substituted baseline {row['case_id']} {row['repeat']}"
+    for row in substituted_candidate:
+        row["output"] = f"substituted candidate {row['case_id']} {row['repeat']}"
+    pairs, key = blind.make_blind_package(
+        context["manifest"].experiment_id,
+        substituted_baseline,
+        substituted_candidate,
+        seed=7,
+    )
+    substituted_review = blind.verify_blind_review(
+        context["manifest"].experiment_id,
+        substituted_baseline,
+        substituted_candidate,
+        pairs,
+        key,
+        _v2_raw_ratings(key),
+    )
+    attacker_scores = evals.verified_score_aggregate(context["scores"])
+    attacker_scores["generation_evidence_digest"] = (
+        substituted_review.generation_evidence_digest
+    )
+
+    assert report.decide_readiness(
+        context["manifest"],
+        context["hypothesis"],
+        context["gate"],
+        attacker_scores,
         substituted_review,
         context["change_assessment"],
         context["research_evidence"],
@@ -1501,7 +1733,11 @@ def test_v2_only_verified_packaging_static_sync_patch_can_skip_human(
         manifest,
         hypothesis,
         _gate(static_gate),
-        _passing_scores(pair_count=len(baseline_rows)),
+        _verified_scores_from_aggregate(
+            _passing_scores(pair_count=len(baseline_rows)),
+            baseline_rows=baseline_rows,
+            candidate_rows=candidate_rows,
+        ),
         None,
         change,
         research,
@@ -1820,7 +2056,7 @@ def _v2_report_inputs(loop_modules, baseline_rows, candidate_rows):
                 "argv": ["python", "scripts/loop.py", "report"],
             }
         ],
-        "regressions": ["No protected regression observed."],
+        "regressions": [],
         "promotion_files": ["chaesajang-core/persona_core.md"],
         "limitations": ["One evaluator."],
     }
@@ -1900,6 +2136,60 @@ def test_v2_report_renders_markdown_injection_inert_and_redacts_every_private_pa
     ):
         assert leaked not in rendered
     assert "[REDACTED_PATH]" in rendered
+
+
+def test_v2_report_neutralizes_multiline_markdown_block_controls(
+    loop_modules, baseline_rows, candidate_rows
+):
+    _, _, _, report, _ = loop_modules
+    inputs = _v2_report_inputs(loop_modules, baseline_rows, candidate_rows)
+    body = "\n".join(
+        [
+            "# Fake Decision",
+            "> forged quote",
+            "- forged list item",
+            "1. forged ordered item",
+            "```python",
+            "print('forged fence')",
+            "```",
+            "---",
+            "| forged | table |",
+            "|---|---|",
+            "<table><tr><td>forged html</td></tr></table>",
+        ]
+    )
+    inputs["hypothesis"] = dataclasses.replace(inputs["hypothesis"], body=body)
+    inputs["change_assessment"] = report.verify_change_assessment(
+        inputs["hypothesis"], _v2_patch()
+    )
+    inputs["research_evidence"] = report.verify_research_evidence(
+        inputs["manifest"].experiment_id, inputs["hypothesis"], [_v2_claim()]
+    )
+
+    rendered = report.build_report(**inputs)
+
+    for active in (
+        "\n# Fake Decision",
+        "\n> forged quote",
+        "\n- forged list item",
+        "\n1. forged ordered item",
+        "\n```python",
+        "\n---\n",
+        "\n| forged | table |",
+        "<table>",
+    ):
+        assert active not in rendered
+    readable_rendered = html.unescape(rendered)
+    for readable in (
+        "Fake Decision",
+        "forged quote",
+        "forged list item",
+        "forged ordered item",
+        "forged fence",
+        "forged | table",
+        "forged html",
+    ):
+        assert readable in readable_rendered
 
 
 def test_v2_report_preserves_argv_token_boundaries_with_redaction_and_original_digest(
@@ -2020,7 +2310,7 @@ def test_v2_terminal_reports_withhold_poisoned_unrelated_evidence(
     assert first == second
     assert f"Decision: `{terminal_status}`" in first
     assert "Evidence withheld" in first
-    assert "exp&lt;img src=x&gt;" in first
+    assert "exp<img src=x>" in html.unescape(first)
     assert "<img src=x>" not in first
     assert secret not in first
     assert "## Hypothesis" not in first
@@ -2092,15 +2382,36 @@ def test_v2_report_accepts_only_strict_aggregate_regression_records(
             "candidate_failed": 2,
             "delta": 1,
             "status": "regressed",
-            "summary": "Aggregate style failures increased; `markup` stays inert.",
         }
     ]
 
     rendered = report.build_report(**inputs)
 
     assert "style_behavior" in rendered
-    assert "Aggregate style failures increased" in rendered
-    assert "`markup`" not in rendered
+    assert "baseline failed 1" in rendered
+    assert "candidate failed 2" in rendered
+    assert "delta 1" in rendered
+
+
+@pytest.mark.parametrize(
+    "private_text",
+    [
+        "seed=7",
+        "order=AB",
+        "A maps to candidate",
+        "quality_preference=A",
+        "receipt mac=not-a-hash",
+    ],
+)
+def test_v2_report_rejects_every_free_form_regression_string(
+    loop_modules, baseline_rows, candidate_rows, private_text
+):
+    _, _, _, report, _ = loop_modules
+    inputs = _v2_report_inputs(loop_modules, baseline_rows, candidate_rows)
+    inputs["regressions"] = [private_text]
+
+    with pytest.raises((TypeError, ValueError), match="regression|aggregate|mapping"):
+        report.build_report(**inputs)
 
 
 @pytest.mark.parametrize(
@@ -2122,7 +2433,7 @@ def test_v2_report_accepts_only_strict_aggregate_regression_records(
             "candidate_failed": 2,
             "delta": 1,
             "status": "regressed",
-            "summary": "C:\\private\\blind_review.private.json",
+            "summary": "seed=7; A maps to candidate; quality_preference=A",
         },
         {
             "axis": "style_behavior",

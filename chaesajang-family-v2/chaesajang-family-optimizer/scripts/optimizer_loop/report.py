@@ -20,7 +20,12 @@ from .blind import (
     is_verified_blind_review,
 )
 from .contracts import ExperimentManifest, ExperimentStatus
-from .evals import AXES, SPLITS
+from .evals import (
+    AXES,
+    SPLITS,
+    VerifiedScoreEvidence,
+    verified_score_aggregate,
+)
 from .hypothesis import Hypothesis, canonical_relative_path
 from .research import normalize_claim
 from .static_gate import GateResult
@@ -95,7 +100,6 @@ _REGRESSION_AGGREGATE_FIELDS = frozenset(
         "candidate_failed",
         "delta",
         "status",
-        "summary",
     }
 )
 _PRIVATE_REGRESSION_KEYS = frozenset(
@@ -577,9 +581,10 @@ def _validate_failure_list(value: object, label: str, *, golden_only: bool) -> l
     return normalized
 
 
-def _validated_scores(scores: object) -> tuple[dict, bool]:
-    if not isinstance(scores, dict):
-        raise TypeError("scores must be a dictionary")
+def _validated_scores(score_evidence: object) -> tuple[dict, bool]:
+    if type(score_evidence) is not VerifiedScoreEvidence:
+        raise TypeError("scores must be process-issued VerifiedScoreEvidence")
+    scores = verified_score_aggregate(score_evidence)
     score_fields = set(scores)
     if score_fields not in {_SCORE_FIELDS, _SCORE_FIELDS | {_SCORE_EVIDENCE_FIELD}}:
         raise ValueError(
@@ -725,7 +730,7 @@ def evaluate_readiness(
     manifest: ExperimentManifest,
     hypothesis: Hypothesis,
     gate: GateResult,
-    scores: dict,
+    scores: VerifiedScoreEvidence,
     review: VerifiedBlindReview | None,
     change_assessment: VerifiedChangeAssessment,
     research_evidence: VerifiedResearchEvidence,
@@ -868,7 +873,7 @@ def decide_readiness(
     manifest: ExperimentManifest,
     hypothesis: Hypothesis,
     gate: GateResult,
-    scores: dict,
+    scores: VerifiedScoreEvidence,
     review: VerifiedBlindReview | None,
     change_assessment: VerifiedChangeAssessment,
     research_evidence: VerifiedResearchEvidence,
@@ -952,46 +957,33 @@ def _regression_items(value: object) -> list[str]:
     rows = _sequence(value, "regressions")
     normalized: list[str] = []
     for index, item in enumerate(rows):
-        if isinstance(item, str):
-            _ensure_safe_regression_value(item, f"regressions[{index}]")
-            text = _nonempty_text(item, f"regressions[{index}]")
-        elif isinstance(item, Mapping):
-            label = f"regressions[{index}]"
-            _ensure_safe_regression_value(item, label)
-            if set(item) != _REGRESSION_AGGREGATE_FIELDS:
-                raise ValueError(
-                    f"{label} must use the exact aggregate regression schema"
-                )
-            axis = item["axis"]
-            if axis not in AXES:
-                raise ValueError(f"{label}.axis is invalid")
-            baseline_failed = _nonnegative_int(
-                item["baseline_failed"], f"{label}.baseline_failed"
-            )
-            candidate_failed = _nonnegative_int(
-                item["candidate_failed"], f"{label}.candidate_failed"
-            )
-            delta = item["delta"]
-            if type(delta) is not int or delta != candidate_failed - baseline_failed:
-                raise ValueError(f"{label}.delta must equal candidate minus baseline")
-            expected_status = (
-                "regressed" if delta > 0 else "improved" if delta < 0 else "unchanged"
-            )
-            if item["status"] != expected_status:
-                raise ValueError(f"{label}.status conflicts with aggregate counts")
-            summary = _nonempty_text(item["summary"], f"{label}.summary")
-            text = _canonical_json(
-                {
-                    "axis": axis,
-                    "baseline_failed": baseline_failed,
-                    "candidate_failed": candidate_failed,
-                    "delta": delta,
-                    "status": expected_status,
-                    "summary": summary,
-                }
-            )
-        else:
-            raise TypeError("regressions entries must be text or aggregate mappings")
+        label = f"regressions[{index}]"
+        if not isinstance(item, Mapping):
+            raise TypeError("regressions entries must be aggregate mappings")
+        if set(item) != _REGRESSION_AGGREGATE_FIELDS:
+            raise ValueError(f"{label} must use the exact aggregate regression schema")
+        axis = item["axis"]
+        if axis not in AXES:
+            raise ValueError(f"{label}.axis is invalid")
+        baseline_failed = _nonnegative_int(
+            item["baseline_failed"], f"{label}.baseline_failed"
+        )
+        candidate_failed = _nonnegative_int(
+            item["candidate_failed"], f"{label}.candidate_failed"
+        )
+        delta = item["delta"]
+        if type(delta) is not int or delta != candidate_failed - baseline_failed:
+            raise ValueError(f"{label}.delta must equal candidate minus baseline")
+        expected_status = (
+            "regressed" if delta > 0 else "improved" if delta < 0 else "unchanged"
+        )
+        if item["status"] != expected_status:
+            raise ValueError(f"{label}.status conflicts with aggregate counts")
+        text = (
+            f"{axis}: baseline failed {baseline_failed}; "
+            f"candidate failed {candidate_failed}; delta {delta}; "
+            f"status {expected_status}"
+        )
         normalized.append(text)
     return sorted(normalized)
 
@@ -1003,10 +995,13 @@ def _excerpt(value: str, limit: int = MAX_REPORT_EXCERPT_CHARACTERS) -> str:
     escaped = escaped.translate(
         {
             ord(character): f"&#{ord(character)};"
-            for character in "`[]()!*_\\:"
+            for character in "`[]()!*_\\:+=|~"
         }
     )
-    return escaped.replace(_PATH_REDACTION_TOKEN, "[REDACTED_PATH]")
+    inert = "&#8203;" + escaped.replace("\r\n", "<br>&#8203;").replace(
+        "\n", "<br>&#8203;"
+    ).replace("\r", "<br>&#8203;")
+    return inert.replace(_PATH_REDACTION_TOKEN, "[REDACTED_PATH]")
 
 
 def _inline(value: object) -> str:
@@ -1043,7 +1038,7 @@ def build_report(
     manifest: ExperimentManifest,
     hypothesis: Hypothesis,
     gate: GateResult,
-    scores: dict,
+    scores: VerifiedScoreEvidence,
     review: VerifiedBlindReview | None,
     change_assessment: VerifiedChangeAssessment,
     research_evidence: VerifiedResearchEvidence,

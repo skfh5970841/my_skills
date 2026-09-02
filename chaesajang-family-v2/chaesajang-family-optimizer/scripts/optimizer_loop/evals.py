@@ -13,6 +13,7 @@ from itertools import combinations
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
+from weakref import WeakKeyDictionary
 
 
 AXES = (
@@ -1556,3 +1557,209 @@ def aggregate_scores(
     if generation_evidence_digest is not None:
         aggregate["generation_evidence_digest"] = generation_evidence_digest
     return aggregate
+
+
+_SCORE_EVIDENCE_SEAL = object()
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, eq=False)
+class VerifiedScoreEvidence:
+    """Process-local proof binding an aggregate to evaluation and generation rows."""
+
+    aggregate_json: str
+    evaluation_rows_sha256: str
+    generation_rows_sha256: str
+    generation_evidence_digest: str
+    _seal: object
+
+
+def _score_evidence_fingerprint(value: VerifiedScoreEvidence) -> str:
+    return _stable_hash(
+        {
+            "aggregate_json": value.aggregate_json,
+            "evaluation_rows_sha256": value.evaluation_rows_sha256,
+            "generation_rows_sha256": value.generation_rows_sha256,
+            "generation_evidence_digest": value.generation_evidence_digest,
+        }
+    )
+
+
+_ISSUED_SCORE_EVIDENCE: WeakKeyDictionary[VerifiedScoreEvidence, str] = (
+    WeakKeyDictionary()
+)
+
+
+def is_verified_score_evidence(value: object) -> bool:
+    """Return whether *value* is an unmodified score proof issued in this process."""
+
+    if (
+        type(value) is not VerifiedScoreEvidence
+        or value._seal is not _SCORE_EVIDENCE_SEAL
+    ):
+        return False
+    try:
+        return _ISSUED_SCORE_EVIDENCE.get(value) == _score_evidence_fingerprint(value)
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def verified_score_aggregate(value: VerifiedScoreEvidence) -> dict:
+    """Return a fresh aggregate copy only for a currently valid issued proof."""
+
+    if not is_verified_score_evidence(value):
+        raise ValueError("score evidence is not a valid process-issued proof")
+    try:
+        aggregate = json.loads(value.aggregate_json)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ValueError("verified score aggregate is invalid") from error
+    if not isinstance(aggregate, dict):
+        raise ValueError("verified score aggregate must be an object")
+    return aggregate
+
+
+def _readiness_aggregate_payload(value: object, label: str) -> dict:
+    if not isinstance(value, Mapping) or "judge" not in value:
+        raise ValueError(f"{label} must be a complete aggregate mapping")
+    payload = dict(value)
+    payload.pop("judge")
+    try:
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{label} is not canonical JSON data") from error
+    return payload
+
+
+def _raw_generation_inventory(
+    rows: object, label: str
+) -> dict[tuple[str, str, int], tuple[str, str]]:
+    if isinstance(rows, (str, bytes, bytearray, Mapping)) or not isinstance(
+        rows, Sequence
+    ):
+        raise TypeError(f"{label} must be a sequence of generation rows")
+    inventory: dict[tuple[str, str, int], tuple[str, str]] = {}
+    for index, raw in enumerate(rows):
+        if not isinstance(raw, Mapping):
+            raise TypeError(f"{label}[{index}] must be a generation mapping")
+        case_id = raw.get("case_id")
+        target_skill = raw.get("target_skill")
+        repeat = raw.get("repeat")
+        if (
+            not isinstance(case_id, str)
+            or not case_id
+            or not isinstance(target_skill, str)
+            or not target_skill
+            or type(repeat) is not int
+            or repeat < 0
+        ):
+            raise ValueError(f"{label}[{index}] has invalid generation identity")
+        missing_parity = [field for field in _GENERATION_PARITY_FIELDS if field not in raw]
+        if missing_parity:
+            raise ValueError(
+                f"{label}[{index}] is missing parity fields: {missing_parity}"
+            )
+        identity = (case_id, target_skill, repeat)
+        if identity in inventory:
+            raise ValueError(f"{label} contains duplicate generation identity")
+        row_dict = dict(raw)
+        inventory[identity] = (
+            _stable_hash(row_dict),
+            _stable_hash({field: row_dict[field] for field in _GENERATION_PARITY_FIELDS}),
+        )
+    if not inventory:
+        raise ValueError(f"{label} must not be empty")
+    return inventory
+
+
+def verify_score_evidence(
+    aggregate: Mapping[str, object],
+    evaluation_rows: Sequence[Mapping[str, object]],
+    baseline_rows: Sequence[Mapping[str, object]],
+    candidate_rows: Sequence[Mapping[str, object]],
+    *,
+    expected_pairs: Iterable[Mapping[str, object]],
+) -> VerifiedScoreEvidence:
+    """Rebuild and issue score evidence for fresh runs or Task 9 resume.
+
+    Callers must provide the persisted aggregate, the exact deterministic/judge
+    evaluation rows, the exact raw baseline and candidate generation rows, and
+    the expected case/repeat inventory used for coverage verification.
+    """
+
+    materialized_evaluations = [dict(row) for row in evaluation_rows]
+    materialized_expected = [dict(pair) for pair in expected_pairs]
+    recomputed = aggregate_scores(
+        materialized_evaluations, expected_pairs=materialized_expected
+    )
+    if _readiness_aggregate_payload(aggregate, "aggregate") != (
+        _readiness_aggregate_payload(recomputed, "recomputed aggregate")
+    ):
+        raise ValueError("aggregate does not match the exact evaluation rows")
+
+    baseline = _raw_generation_inventory(baseline_rows, "baseline_rows")
+    candidate = _raw_generation_inventory(candidate_rows, "candidate_rows")
+    deterministic = [
+        row for row in materialized_evaluations if row.get("row_type") == "deterministic"
+    ]
+    observed: dict[str, set[tuple[str, str, int]]] = {
+        "baseline": set(),
+        "candidate": set(),
+    }
+    for index, row in enumerate(deterministic):
+        condition = row["condition"]
+        inventory = baseline if condition == "baseline" else candidate
+        identity = (row["case_id"], row["target_skill"], row["repeat"])
+        if identity not in inventory:
+            raise ValueError(
+                f"deterministic row {index + 1} has no exact {condition} generation row"
+            )
+        generation_sha256, parity_signature = inventory[identity]
+        if row.get("generation_sha256") != generation_sha256:
+            raise ValueError(
+                f"deterministic row {index + 1} generation evidence does not match"
+            )
+        if row.get("parity_signature") != parity_signature:
+            raise ValueError(
+                f"deterministic row {index + 1} parity does not match generation row"
+            )
+        observed[condition].add(identity)
+    if observed["baseline"] != set(baseline) or observed["candidate"] != set(candidate):
+        raise ValueError("deterministic evaluation coverage does not match generation rows")
+
+    generation_evidence_digest = recomputed.get("generation_evidence_digest")
+    if (
+        not isinstance(generation_evidence_digest, str)
+        or _SHA256_RE.fullmatch(generation_evidence_digest) is None
+    ):
+        raise ValueError("recomputed aggregate lacks generation evidence")
+    aggregate_json = json.dumps(
+        recomputed,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    generation_rows = {
+        "baseline": sorted(
+            ({"identity": identity, "sha256": values[0]} for identity, values in baseline.items()),
+            key=lambda row: row["identity"],
+        ),
+        "candidate": sorted(
+            ({"identity": identity, "sha256": values[0]} for identity, values in candidate.items()),
+            key=lambda row: row["identity"],
+        ),
+    }
+    proof = VerifiedScoreEvidence(
+        aggregate_json=aggregate_json,
+        evaluation_rows_sha256=_stable_hash({"rows": materialized_evaluations}),
+        generation_rows_sha256=_stable_hash(generation_rows),
+        generation_evidence_digest=generation_evidence_digest,
+        _seal=_SCORE_EVIDENCE_SEAL,
+    )
+    _ISSUED_SCORE_EVIDENCE[proof] = _score_evidence_fingerprint(proof)
+    return proof

@@ -944,6 +944,104 @@ def test_aggregate_generation_commitment_matches_blind_raw_evidence(loop_modules
     )
 
 
+def test_verify_score_evidence_rebuilds_exact_rows_and_is_mutation_evident(
+    loop_modules
+):
+    evals, _, _ = loop_modules
+    case = eval_case(evals, split="golden")
+    common = {
+        "source_snapshot": {"SKILL.md": "1" * 64},
+        "source_snapshot_after": {"SKILL.md": "1" * 64},
+    }
+    baseline = output_row(
+        "핵심 질문. 결론. 사실 하나.", input=case.generator_brief, **common
+    )
+    candidate = output_row(
+        "핵심 질문. 결론. 사실 하나. 더 명확한 설명.",
+        input=case.generator_brief,
+        **common,
+    )
+    rows = [
+        evals.make_deterministic_row(case, baseline, "baseline"),
+        evals.make_deterministic_row(case, candidate, "candidate"),
+    ]
+    expected = [expected_pair(case)]
+    aggregate = evals.aggregate_scores(rows, expected_pairs=expected)
+
+    proof = evals.verify_score_evidence(
+        aggregate,
+        rows,
+        [baseline],
+        [candidate],
+        expected_pairs=expected,
+    )
+
+    assert evals.is_verified_score_evidence(proof) is True
+    assert evals.verified_score_aggregate(proof) == aggregate
+    aggregate["golden_passed"] = False
+    assert evals.verified_score_aggregate(proof)["golden_passed"] is True
+
+    copied = copy.copy(proof)
+    forged = evals.VerifiedScoreEvidence(
+        aggregate_json=proof.aggregate_json,
+        evaluation_rows_sha256=proof.evaluation_rows_sha256,
+        generation_rows_sha256=proof.generation_rows_sha256,
+        generation_evidence_digest=proof.generation_evidence_digest,
+        _seal=proof._seal,
+    )
+    assert evals.is_verified_score_evidence(copied) is False
+    assert evals.is_verified_score_evidence(forged) is False
+
+    resumed = evals.verify_score_evidence(
+        json.loads(json.dumps(evals.verified_score_aggregate(proof))),
+        json.loads(json.dumps(rows)),
+        json.loads(json.dumps([baseline])),
+        json.loads(json.dumps([candidate])),
+        expected_pairs=json.loads(json.dumps(expected)),
+    )
+    assert evals.is_verified_score_evidence(resumed) is True
+    assert evals.verified_score_aggregate(resumed) == evals.verified_score_aggregate(
+        proof
+    )
+
+    object.__setattr__(proof, "aggregate_json", "{}")
+    assert evals.is_verified_score_evidence(proof) is False
+
+
+def test_verify_score_evidence_rejects_generation_substitution(loop_modules):
+    evals, _, _ = loop_modules
+    case = eval_case(evals, split="golden")
+    baseline = output_row("baseline", input=case.generator_brief)
+    candidate = output_row("candidate", input=case.generator_brief)
+    rows = [
+        evals.make_deterministic_row(case, baseline, "baseline"),
+        evals.make_deterministic_row(case, candidate, "candidate"),
+    ]
+    expected = [expected_pair(case)]
+    aggregate = evals.aggregate_scores(rows, expected_pairs=expected)
+    substituted = dict(candidate, output="substituted candidate")
+
+    swapped_digest = copy.deepcopy(aggregate)
+    swapped_digest["generation_evidence_digest"] = "0" * 64
+    with pytest.raises(ValueError, match="aggregate|evaluation"):
+        evals.verify_score_evidence(
+            swapped_digest,
+            rows,
+            [baseline],
+            [candidate],
+            expected_pairs=expected,
+        )
+
+    with pytest.raises(ValueError, match="generation|evidence|row"):
+        evals.verify_score_evidence(
+            aggregate,
+            rows,
+            [baseline],
+            [substituted],
+            expected_pairs=expected,
+        )
+
+
 def test_aggregate_requires_complete_unique_parity_matched_deterministic_pairs(loop_modules):
     evals, _, _ = loop_modules
     case = eval_case(evals)
