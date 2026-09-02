@@ -10,7 +10,7 @@ import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 from itertools import combinations
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
 from weakref import WeakKeyDictionary
@@ -56,7 +56,11 @@ _REQUIRED_FIELDS = frozenset(
         "deterministic_checks",
     }
 )
-_OPTIONAL_FIELDS = frozenset({"evaluator_reference"})
+_OPTIONAL_FIELDS = frozenset({"evaluator_reference", "before_hash", "provenance"})
+_PROVENANCE_FIELDS = frozenset({"path", "mode", "source_sha256", "note"})
+_PROVENANCE_MODES = frozenset(
+    {"excerpt_only", "mutated_snapshot", "documented_snapshot"}
+)
 _CHECK_KEYS = frozenset(
     {
         "output_present",
@@ -272,6 +276,45 @@ def _normalize_checks(value: object) -> Mapping[str, object]:
     return MappingProxyType(checks)
 
 
+def _normalize_provenance(value: object) -> Mapping[str, str]:
+    if not isinstance(value, Mapping):
+        raise TypeError("provenance must be an object")
+    if set(value) != _PROVENANCE_FIELDS:
+        missing = _PROVENANCE_FIELDS - set(value)
+        unknown = set(value) - _PROVENANCE_FIELDS
+        raise ValueError(
+            "provenance must contain exactly path, mode, source_sha256, and note; "
+            f"missing={sorted(missing)}; unknown={sorted(unknown)}"
+        )
+    path = _required_text(value["path"], "provenance.path")
+    pure_path = PurePosixPath(path)
+    if (
+        "\\" in path
+        or (pure_path.parts and ":" in pure_path.parts[0])
+        or pure_path.is_absolute()
+        or pure_path.as_posix() != path
+        or any(part in {"", ".", ".."} for part in pure_path.parts)
+    ):
+        raise ValueError("provenance.path must be a normalized relative POSIX path")
+    mode = _required_text(value["mode"], "provenance.mode", identifier=True)
+    if mode not in _PROVENANCE_MODES:
+        raise ValueError(f"unknown provenance.mode: {mode}")
+    source_sha256 = _required_text(
+        value["source_sha256"], "provenance.source_sha256", identifier=True
+    )
+    if _SHA256_RE.fullmatch(source_sha256) is None:
+        raise ValueError("provenance.source_sha256 must be a SHA-256 hex digest")
+    note = _required_text(value["note"], "provenance.note", narrative=True)
+    return MappingProxyType(
+        {
+            "path": path,
+            "mode": mode,
+            "source_sha256": source_sha256,
+            "note": note,
+        }
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class EvalCase:
     """An immutable evaluation case with evaluator-only material separated."""
@@ -285,6 +328,8 @@ class EvalCase:
     deterministic_checks: Mapping[str, object]
     evaluator_reference: str | None
     split: str
+    before_hash: str | None = None
+    provenance: Mapping[str, str] | None = None
 
     @classmethod
     def from_dict(cls, data: dict, split: str) -> "EvalCase":
@@ -353,6 +398,20 @@ class EvalCase:
                     "evaluator_reference length to avoid a vacuous overlap gate"
                 )
 
+        raw_before_hash = data.get("before_hash")
+        raw_provenance = data.get("provenance")
+        if (raw_before_hash is None) != (raw_provenance is None):
+            raise ValueError("before_hash and provenance must be supplied together")
+        before_hash = None
+        provenance = None
+        if raw_before_hash is not None:
+            before_hash = _required_text(
+                raw_before_hash, "before_hash", identifier=True
+            )
+            if _SHA256_RE.fullmatch(before_hash) is None:
+                raise ValueError("before_hash must be a SHA-256 hex digest")
+            provenance = _normalize_provenance(raw_provenance)
+
         for check in checks:
             required_axis = _CHECK_AXES[check]
             if required_axis not in axes:
@@ -401,6 +460,8 @@ class EvalCase:
             deterministic_checks=checks,
             evaluator_reference=evaluator_reference,
             split=split,
+            before_hash=before_hash,
+            provenance=provenance,
         )
 
 

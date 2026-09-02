@@ -34,24 +34,40 @@ def find_skill_calls(obj, found):
             find_skill_calls(v, found)
 
 
+def invoke(query: str):
+    """Run one legacy Claude trigger probe without a shell."""
+    return subprocess.run(
+        ["claude", "-p", query, "--output-format", "json", "--max-turns", "1"],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        encoding="utf-8",
+        errors="ignore",
+        shell=False,
+    )
+
+
 def check_triggered(query: str):
     try:
-        r = subprocess.run(
-            ["claude", "-p", query, "--output-format", "json", "--max-turns", "1"],
-            capture_output=True, text=True, timeout=180,
-            encoding="utf-8", errors="ignore")
+        r = invoke(query)
     except subprocess.TimeoutExpired:
         return None, "timeout"
+    except Exception as error:
+        return None, f"invoke-error={type(error).__name__}: {error}"
+    if r.returncode != 0:
+        return None, f"nonzero-exit={r.returncode} stderr={r.stderr[:120]}"
     out = r.stdout.strip()
     if not out:
         return None, f"no-output stderr={r.stderr[:120]}"
-    # JSON 복원: result 필드 안에 이스케이프된 JSON이 있을 수 있어 원문에서도 탐색
     skills = []
     try:
         data = json.loads(out)
-        find_skill_calls(data, skills)
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as error:
+        return None, f"malformed-output={error.msg}"
+    if not isinstance(data, (dict, list)):
+        return None, "malformed-output=top-level JSON must be an object or array"
+    find_skill_calls(data, skills)
+    # Some valid legacy payloads carry a serialized tool event inside `result`.
     for s in FAMILY:
         if s in out and ("Skill" in out or "skill" in out):
             if s not in skills:
@@ -59,36 +75,69 @@ def check_triggered(query: str):
     return skills, None
 
 
-def main():
-    runs = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-    target = sys.argv[2] if len(sys.argv) > 2 else "chaesajang-style"
+def evaluate_case(case: dict, runs: int, target: str) -> dict:
+    """Evaluate all repeats, blocking the whole case on any incomplete repeat."""
+    if not isinstance(runs, int) or isinstance(runs, bool) or runs <= 0:
+        raise ValueError("runs must be a positive integer")
+    triggers = 0
+    completed_runs = 0
+    for _ in range(runs):
+        skills, error = check_triggered(case["query"])
+        if error:
+            return {
+                "id": case["id"],
+                "status": "blocked_external",
+                "passed": False,
+                "trigger_rate": None,
+                "completed_runs": completed_runs,
+                "error": error,
+            }
+        completed_runs += 1
+        hit = any(skill in FAMILY for skill in skills) if target == "any" else target in skills
+        triggers += 1 if hit else 0
+    rate = triggers / runs
+    should = case["should_trigger"]
+    passed = (rate > 0.5) if should else (rate <= 0.5)
+    return {
+        "id": case["id"],
+        "status": "completed",
+        "passed": passed,
+        "trigger_rate": rate,
+        "completed_runs": completed_runs,
+        "error": None,
+    }
+
+
+def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    runs = int(args[0]) if args else 1
+    target = args[1] if len(args) > 1 else "chaesajang-style"
     print(f"총 {len(QUERIES)}질의 × {runs}회 / target={target}\n")
     results = []
     for q in QUERIES:
-        triggers = 0
-        err = None
-        for _ in range(runs):
-            skills, e = check_triggered(q["query"])
-            if e:
-                err = e
-                break
-            hit = any(s in FAMILY for s in skills) if target == "any" else target in skills
-            triggers += 1 if hit else 0
-        rate = triggers / runs
-        should = q["should_trigger"]
-        ok = (rate > 0.5) if should else (rate <= 0.5)
-        results.append((q["id"], q["query"][:36], should, rate, ok))
-        flag = "PASS" if ok else "FAIL"
-        print(f"q{q['id']:<3} want={'T' if should else 'F'} rate={rate:.2f} {flag:4} | {q['query'][:40]}")
+        result = evaluate_case(q, runs, target)
+        results.append(result)
+        if result["status"] == "blocked_external":
+            print(
+                f"q{q['id']:<3} want={'T' if q['should_trigger'] else 'F'} "
+                f"rate=-- BLOCKED | {q['query'][:40]} | {result['error']}"
+            )
+            continue
+        flag = "PASS" if result["passed"] else "FAIL"
+        print(
+            f"q{q['id']:<3} want={'T' if q['should_trigger'] else 'F'} "
+            f"rate={result['trigger_rate']:.2f} {flag:4} | {q['query'][:40]}"
+        )
 
-    n_pass = sum(1 for r in results if r[4])
+    n_pass = sum(1 for result in results if result["passed"])
     print(f"\n통과 {n_pass}/{len(results)}")
-    fails = [r for r in results if not r[4]]
+    fails = [result for result in results if not result["passed"]]
     if fails:
-        print("실패 질의:", [f"q{r[0]}" for r in fails])
+        print("실패 질의:", [f"q{result['id']}" for result in fails])
         print("- should-trigger 실패 → description 확장 필요")
         print("- negative 실패 → 경계 문구 필요")
+    return 0 if not fails else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

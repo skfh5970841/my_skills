@@ -1,0 +1,5 @@
+{"case_id":"optimizer-no-evidence","policy":"no_evidence_no_candidate","expected_error":"claims must not be empty"}
+{"case_id":"optimizer-low-risk-packaging","policy":"low_risk_packaging_skips_human_blind","expected_human_required":false}
+{"case_id":"optimizer-persona-change","policy":"persona_change_requires_human_blind","expected_human_required":true}
+{"case_id":"optimizer-failed-command","policy":"failed_command_is_blocked_external","expected_status":"blocked_external"}
+{"case_id":"optimizer-unapproved-promotion","policy":"unapproved_promotion_is_denied","expected_error":"promotion requires explicit user approval"}

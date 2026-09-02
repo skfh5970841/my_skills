@@ -2,6 +2,33 @@
 
 2번(코어 통합)·5번(핸드오프) 과제의 최종 산출물. 1번 과제(자아 코어)의 Step 0도 SKILL.md 수정본에 이미 반영되어 있어, 이 배포 한 번으로 두 과제가 함께 적용된다.
 
+## 옵티마이저 소유권과 안전 경계
+
+- `family.yaml`, `chaesajang-core/`, 각 스킬 폴더가 canonical source다. 직접 수정은 승인된 변경에만 허용한다.
+- `skills/`, `dist/`, `*.skill`은 생성물이다. 직접 편집하지 말고 `sync_core.py`와 renderer로 다시 만든다.
+- `feedback/completed/` 원문과 `evals/golden/` 이관본은 immutable evidence다. 새 정보는 새 기록으로 추가하며 기존 기록을 덮어쓰지 않는다.
+- 후보, raw generation, 점수, blind package, rating, report는 해당 `experiments/<id>/`가 소유한다. `ready_for_approval`은 쓰기 권한이 아니며, `promote --approved-by-user`만 canonical source를 변경할 수 있다.
+
+## 최소 CLI
+
+저장소 루트에서 다음 형식을 사용한다. 현재 `bootstrap`은 설정 요약을 검증·출력하고, `cycle`과 `resume`은 저장된 manifest의 다음 행동을 출력하며, `report`는 기록된 보고서만 읽는다. 이 세 명령은 live model을 호출하거나 canonical source를 쓰지 않는다.
+
+```powershell
+python chaesajang-family-v2/chaesajang-family-optimizer/scripts/loop.py --root chaesajang-family-v2 bootstrap --experiment <id> --model <model> --reasoning <effort>
+python chaesajang-family-v2/chaesajang-family-optimizer/scripts/loop.py --root chaesajang-family-v2 cycle --experiment <id> --claims <research.jsonl> --hypothesis <hypothesis.md> --cases <cases.jsonl> --ratings <human_ratings.jsonl> --timeout 180
+python chaesajang-family-v2/chaesajang-family-optimizer/scripts/loop.py --root chaesajang-family-v2 resume --experiment <id> --timeout 180
+python chaesajang-family-v2/chaesajang-family-optimizer/scripts/loop.py --root chaesajang-family-v2 report --experiment <id>
+python chaesajang-family-v2/chaesajang-family-optimizer/scripts/loop.py --root chaesajang-family-v2 promote --experiment <id> --approved-by-user
+```
+
+설치본까지 교체할 권한을 따로 받은 경우에만 마지막 명령에 `--install-root <explicit-path>`를 추가한다.
+
+## 사람 평가, 차단 상태, 비용
+
+`human_ratings.jsonl`은 blind pair마다 한 줄의 JSON object를 기록한다. 필드는 `pair_id`, `quality_preference`, `style_preference`, `overall_preference`, `over_imitation`, `meaning_or_fact_issue` (`A`/`B` 각각), `evidence_excerpt`다. 공개 pair의 `A`/`B`만 평가하고 private mapping은 rating 파일에 복사하지 않는다.
+
+명령 비정상 종료, CLI 부재, timeout, 빈 출력, malformed output은 `blocked_external`이며 PASS나 0점이 아니다. provenance·hash·필수 artifact가 불완전하면 `invalid`, gate 또는 보호 사례가 실패하면 `rejected`다. deterministic tests 자체는 live Codex를 호출하지 않는다. 별도로 승인해 실제 Codex generation을 실행하면 모델 사용 비용과 latency가 발생할 수 있다.
+
 ## 산출물 구성
 
 ```
