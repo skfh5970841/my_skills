@@ -1268,42 +1268,45 @@ def build_report(
     if not regression_rows:
         lines.append("- None reported.")
 
-    lines.extend(["", "## Human Blind Review", "", ONE_PERSON_DISCLAIMER, ""])
-    if review is not None and is_verified_blind_review(review):
-        lines.extend(
-            [
-                f"- Public bundle digest: `{review.public_bundle_digest}`",
-                f"- Coverage: `{review.coverage_count}` / `{review.expected_count}` presentations",
-            ]
-        )
-        if review.complete:
-            overall = _source_preference_counts(
-                review.condition_ratings, "overall_preference"
+    if change_assessment.human_required:
+        lines.extend(["", "## Human Blind Review", "", ONE_PERSON_DISCLAIMER, ""])
+        if review is not None and is_verified_blind_review(review):
+            lines.extend(
+                [
+                    f"- Public bundle digest: `{review.public_bundle_digest}`",
+                    f"- Coverage: `{review.coverage_count}` / `{review.expected_count}` presentations",
+                ]
             )
-            lines.append(
-                "- Aggregate preference: candidate `"
-                + str(overall["candidate"])
-                + "`, baseline `"
-                + str(overall["baseline"])
-                + "`, tie `"
-                + str(overall["tie"])
-                + "` source pairs."
-            )
+            if review.complete:
+                overall = _source_preference_counts(
+                    review.condition_ratings, "overall_preference"
+                )
+                lines.append(
+                    "- Aggregate preference: candidate `"
+                    + str(overall["candidate"])
+                    + "`, baseline `"
+                    + str(overall["baseline"])
+                    + "`, tie `"
+                    + str(overall["tie"])
+                    + "` source pairs."
+                )
+            else:
+                lines.append(
+                    "- Aggregate preference: withheld until coverage is complete."
+                )
         else:
-            lines.append("- Aggregate preference: withheld until coverage is complete.")
-    else:
-        expected_presentations = (
-            checked_scores["expected_pair_count"] * 2
-            if checked_scores is not None
-            else 0
-        )
-        lines.extend(
-            [
-                "- Public bundle digest: `not supplied`",
-                f"- Coverage: `0` / `{expected_presentations}` presentations",
-                "- Aggregate preference: withheld until a verified complete review exists.",
-            ]
-        )
+            expected_presentations = (
+                checked_scores["expected_pair_count"] * 2
+                if checked_scores is not None
+                else 0
+            )
+            lines.extend(
+                [
+                    "- Public bundle digest: `not supplied`",
+                    f"- Coverage: `0` / `{expected_presentations}` presentations",
+                    "- Aggregate preference: withheld until a verified complete review exists.",
+                ]
+            )
 
     lines.extend(["", "## Reproducibility", ""])
     if isinstance(manifest, ExperimentManifest):

@@ -18,7 +18,7 @@ SCRIPTS = (
 sys.path.insert(0, str(SCRIPTS))
 
 from optimizer_loop import blind, cli, evals, promote as promote_module, report
-from optimizer_loop.artifacts import write_jsonl
+from optimizer_loop.artifacts import read_jsonl, write_jsonl
 from optimizer_loop.candidate import create_candidate, write_candidate_patch
 from optimizer_loop.contracts import ExperimentManifest
 from optimizer_loop.hypothesis import Hypothesis
@@ -56,11 +56,13 @@ def _json(path: Path, value: object) -> None:
     )
 
 
-def _generation_row(output: str, source_hashes: dict[str, str]) -> dict:
+def _generation_row(
+    output: str, source_hashes: dict[str, str], *, target_skill: str = "demo-skill"
+) -> dict:
     brief = "인공지능의 한계를 쉬운 한국어로 설명하세요."
     return {
         "case_id": "case-one",
-        "target_skill": "demo-skill",
+        "target_skill": target_skill,
         "repeat": 0,
         "input": brief,
         "prompt": "stable neutral prompt",
@@ -83,11 +85,11 @@ def _generation_row(output: str, source_hashes: dict[str, str]) -> dict:
     }
 
 
-def _case() -> evals.EvalCase:
+def _case(*, target_skill: str = "demo-skill") -> evals.EvalCase:
     return evals.EvalCase.from_dict(
         {
             "case_id": "case-one",
-            "target_skill": "demo-skill",
+            "target_skill": target_skill,
             "source_group": "fixture/one",
             "generator_brief": "인공지능의 한계를 쉬운 한국어로 설명하세요.",
             "axes": list(AXES),
@@ -118,7 +120,11 @@ def _rating(pair: dict, key: dict) -> dict:
 
 
 def _ready_fixture(
-    tmp_path: Path, *, candidate_uses_baseline_snapshot: bool = False
+    tmp_path: Path,
+    *,
+    candidate_uses_baseline_snapshot: bool = False,
+    multi_skill: bool = False,
+    candidate_uses_other_skill_snapshot: bool = False,
 ) -> ReadyFixture:
     family = tmp_path / "fixture-repository"
     core = family / "demo-core"
@@ -129,14 +135,31 @@ def _ready_fixture(
     candidate_bytes = b"---\nname: demo-skill\n---\n\nImproved guidance.\n"
     canonical = skill / "SKILL.md"
     canonical.write_bytes(original)
-    (family / "family.yaml").write_text(
-        "schema_version: 1\n"
-        "core: demo-core\n"
-        "skills:\n"
+    other_skill = family / "other-skill"
+    if multi_skill:
+        other_skill.mkdir()
+        (other_skill / "SKILL.md").write_bytes(
+            b"---\nname: other-skill\n---\n\nUnrelated guidance.\n"
+        )
+    skills_yaml = (
         "  - name: demo-skill\n"
         "    source: demo-skill\n"
         "    core_files: []\n"
         "    inject_gaze: false\n"
+    )
+    if multi_skill:
+        skills_yaml += (
+            "  - name: other-skill\n"
+            "    source: other-skill\n"
+            "    core_files: []\n"
+            "    inject_gaze: false\n"
+        )
+    (family / "family.yaml").write_text(
+        "schema_version: 1\n"
+        "core: demo-core\n"
+        "skills:\n"
+        + skills_yaml
+        +
         "generated: {compatibility_snapshots: skills, dist: dist, experiments: experiments, package_extension: .skill}\n"
         "adapters:\n"
         "  codex:\n"
@@ -157,6 +180,14 @@ def _ready_fixture(
         **baseline,
         "demo-skill/SKILL.md": hashlib.sha256(candidate_bytes).hexdigest(),
     }
+    baseline_skill_snapshot = {"SKILL.md": baseline["demo-skill/SKILL.md"]}
+    candidate_skill_snapshot = {
+        "SKILL.md": candidate_snapshot["demo-skill/SKILL.md"]
+    }
+    if candidate_uses_other_skill_snapshot:
+        candidate_skill_snapshot = {
+            "SKILL.md": baseline["other-skill/SKILL.md"]
+        }
 
     claim = normalize_claim(
         {
@@ -189,13 +220,15 @@ def _ready_fixture(
         encoding="utf-8",
     )
 
-    baseline_rows = [_generation_row("핵심 결론과 사실 하나.", baseline)]
+    baseline_rows = [
+        _generation_row("핵심 결론과 사실 하나.", baseline_skill_snapshot)
+    ]
     candidate_rows = [
         _generation_row(
             "더 명확한 핵심 결론과 사실 하나.",
-            baseline
+            baseline_skill_snapshot
             if candidate_uses_baseline_snapshot
-            else candidate_snapshot,
+            else candidate_skill_snapshot,
         )
     ]
     write_jsonl(experiment / "baseline.jsonl", baseline_rows)
@@ -250,17 +283,27 @@ def _ready_fixture(
     _json(experiment / "manifest.json", manifest.to_dict())
     hypothesis = Hypothesis.from_markdown(experiment / "hypothesis.md")
     gate = GateResult(True, (), {"fixture": True})
-    evidence = promote_module._verify_task8_evidence(
-        experiment,
-        manifest,
-        hypothesis,
-        (experiment / "candidate.patch").read_text(encoding="utf-8"),
-        gate,
-        baseline
-        if candidate_uses_baseline_snapshot
-        else candidate_snapshot,
+    change = report.verify_change_assessment(
+        hypothesis, (experiment / "candidate.patch").read_text(encoding="utf-8")
     )
-    (experiment / "report.md").write_text(
+    research = report.verify_research_evidence("run-001", hypothesis, [claim])
+    score_evidence = evals.verify_score_evidence(
+        aggregate,
+        evaluations,
+        baseline_rows,
+        candidate_rows,
+        expected_pairs=expected_pairs,
+    )
+    verification_data = manifest.to_dict()
+    verification_data["status"] = "awaiting_human"
+    evidence = promote_module._PromotionEvidence(
+        verification_manifest=ExperimentManifest.from_dict(verification_data),
+        score_evidence=score_evidence,
+        review=review,
+        change=change,
+        research=research,
+    )
+    (experiment / "report.md").write_bytes(
         promote_module._rebuild_approval_report(
             experiment,
             registry,
@@ -268,8 +311,7 @@ def _ready_fixture(
             gate,
             evidence,
             ("demo-skill/SKILL.md",),
-        ),
-        encoding="utf-8",
+        ).encode("utf-8")
     )
     return ReadyFixture(
         family, experiment, canonical, registry, original, candidate_bytes
@@ -419,6 +461,34 @@ def test_promotion_rejects_candidate_evidence_bound_to_baseline_snapshot(
     assert not (fixture.experiment / "promotion.json").exists()
 
 
+def test_multi_skill_promotion_accepts_selected_skill_snapshots_and_rejects_wrong_skill(
+    tmp_path,
+):
+    valid = _ready_fixture(tmp_path / "valid", multi_skill=True)
+    unrelated = valid.family / "other-skill" / "SKILL.md"
+    unrelated_before = unrelated.read_bytes()
+
+    result = promote(valid.experiment, valid.registry, approved_by_user=True)
+
+    assert valid.canonical.read_bytes() == valid.candidate
+    assert unrelated.read_bytes() == unrelated_before
+    assert result["changed_paths"] == ["demo-skill/SKILL.md"]
+
+    wrong = _ready_fixture(
+        tmp_path / "wrong",
+        multi_skill=True,
+        candidate_uses_other_skill_snapshot=True,
+    )
+    before_manifest = (wrong.experiment / "manifest.json").read_bytes()
+
+    with pytest.raises(ValueError, match="candidate.*source snapshot"):
+        promote(wrong.experiment, wrong.registry, approved_by_user=True)
+
+    assert wrong.canonical.read_bytes() == wrong.original
+    assert (wrong.experiment / "manifest.json").read_bytes() == before_manifest
+    assert not (wrong.experiment / "promotion.json").exists()
+
+
 def test_promotion_rejects_tampered_or_stale_report_before_writes(tmp_path):
     fixture = _ready_fixture(tmp_path)
     (fixture.experiment / "report.md").write_text(
@@ -432,6 +502,135 @@ def test_promotion_rejects_tampered_or_stale_report_before_writes(tmp_path):
     assert fixture.canonical.read_bytes() == fixture.original
     assert (fixture.experiment / "manifest.json").read_bytes() == before_manifest
     assert not (fixture.experiment / "promotion.json").exists()
+
+
+def test_promotion_rejects_report_with_byte_different_newlines(tmp_path):
+    fixture = _ready_fixture(tmp_path)
+    report_path = fixture.experiment / "report.md"
+    expected = report_path.read_bytes()
+    crlf = expected.replace(b"\n", b"\r\n")
+    assert crlf != expected
+    report_path.write_bytes(crlf)
+    before_manifest = (fixture.experiment / "manifest.json").read_bytes()
+
+    with pytest.raises(ValueError, match="report.md.*exact.*evidence"):
+        promote(fixture.experiment, fixture.registry, approved_by_user=True)
+
+    assert fixture.canonical.read_bytes() == fixture.original
+    assert (fixture.experiment / "manifest.json").read_bytes() == before_manifest
+    assert not (fixture.experiment / "promotion.json").exists()
+
+
+def test_static_only_report_omits_blind_artifacts_and_rating_claim(tmp_path):
+    fixture = _ready_fixture(tmp_path)
+    experiment = fixture.experiment
+    for name in (
+        "blind_pairs.jsonl",
+        "blind_key.private.json",
+        "human_ratings.jsonl",
+        "blind_review.private.json",
+    ):
+        (experiment / name).unlink()
+    claim = normalize_claim(
+        {
+            "claim": "The deterministic sync wrapper must remain synchronized.",
+            "source_url": "https://example.test/static-sync",
+            "source_date": "2026-08-01",
+            "checked_at": "2026-09-02",
+            "source_type": "technical_report",
+            "evidence": "The static check verifies synchronized generated outputs.",
+            "confidence": "high",
+            "local_evidence": ["sync_core.py"],
+            "decision_impact": "Update only the static sync wrapper.",
+            "proposed_test": "Run the deterministic sync check.",
+        }
+    )
+    claim_id = report.research_claim_id(claim)
+    write_jsonl(experiment / "research.jsonl", [claim])
+    (experiment / "hypothesis.md").write_text(
+        "---\n"
+        f"claim_ids: [{claim_id}]\n"
+        "change_group: packaging/static-sync\n"
+        "allowed_paths: [sync_core.py]\n"
+        "primary_axis: resource_use\n"
+        "protected_axes: [meaning_and_facts]\n"
+        "risk: low\n"
+        "blind_required: false\n"
+        "stop_rule: reject deterministic regressions\n"
+        "---\n"
+        "Update only the verified static sync wrapper.\n",
+        encoding="utf-8",
+    )
+    patch = (
+        "--- a/sync_core.py\n"
+        "+++ b/sync_core.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    (experiment / "candidate.patch").write_text(patch, encoding="utf-8")
+    hypothesis = Hypothesis.from_markdown(experiment / "hypothesis.md")
+    manifest = ExperimentManifest.from_dict(
+        json.loads((experiment / "manifest.json").read_text("utf-8"))
+    )
+    verification_data = manifest.to_dict()
+    verification_data["status"] = "auto_evaluated"
+    baseline_rows = list(read_jsonl(experiment / "baseline.jsonl"))
+    candidate_rows = list(read_jsonl(experiment / "candidate.jsonl"))
+    scores = json.loads((experiment / "scores.json").read_text("utf-8"))
+    for evaluation in scores["evaluation_rows"]:
+        for axis in AXES:
+            evaluation["scores"][axis] = {
+                "passed": True,
+                "status": "scored",
+                "evidence": {},
+            }
+    scores["aggregate"] = evals.aggregate_scores(
+        scores["evaluation_rows"], expected_pairs=scores["expected_pairs"]
+    )
+    _json(experiment / "scores.json", scores)
+    score_evidence = evals.verify_score_evidence(
+        scores["aggregate"],
+        scores["evaluation_rows"],
+        baseline_rows,
+        candidate_rows,
+        expected_pairs=scores["expected_pairs"],
+    )
+    evidence = promote_module._PromotionEvidence(
+        verification_manifest=ExperimentManifest.from_dict(verification_data),
+        score_evidence=score_evidence,
+        review=None,
+        change=report.verify_change_assessment(hypothesis, patch),
+        research=report.verify_research_evidence("run-001", hypothesis, [claim]),
+    )
+    gate = GateResult(True, (), {"fixture": True})
+    readiness = report.evaluate_readiness(
+        evidence.verification_manifest,
+        hypothesis,
+        gate,
+        evidence.score_evidence,
+        None,
+        evidence.change,
+        evidence.research,
+    )
+    assert readiness.status == "ready_for_approval", readiness.reasons
+
+    rendered = promote_module._rebuild_approval_report(
+        experiment,
+        fixture.registry,
+        hypothesis,
+        gate,
+        evidence,
+        ("sync_core.py",),
+    )
+
+    assert "blind_pairs.jsonl" not in rendered
+    assert "human_ratings.jsonl" not in rendered
+    assert "## Human Blind Review" not in rendered
+    assert "사용자 1인의 선호" not in rendered
+    assert "Aggregate preference" not in rendered
+    (experiment / "report.md").write_bytes(rendered.encode("utf-8"))
+    promote_module._validate_approval_report(experiment, rendered)
 
 
 def test_explicit_install_root_updates_owned_files_and_preserves_extras(tmp_path):

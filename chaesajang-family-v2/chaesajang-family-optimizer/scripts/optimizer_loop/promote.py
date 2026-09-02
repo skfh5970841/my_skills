@@ -224,6 +224,20 @@ class _PromotionEvidence:
     research: object
 
 
+def _selected_skill_hashes(
+    source_hashes: dict[str, str], target_skill: str
+) -> dict[str, str]:
+    prefix = f"{target_skill}/"
+    selected = {
+        path[len(prefix) :]: digest
+        for path, digest in source_hashes.items()
+        if path.startswith(prefix)
+    }
+    if not selected:
+        raise ValueError(f"target_skill has no canonical source files: {target_skill}")
+    return dict(sorted(selected.items()))
+
+
 def _verify_task8_evidence(
     experiment: Path,
     manifest: ExperimentManifest,
@@ -235,20 +249,6 @@ def _verify_task8_evidence(
     baseline_rows = read_jsonl(experiment / "baseline.jsonl")
     candidate_rows = read_jsonl(experiment / "candidate.jsonl")
     claims = read_jsonl(experiment / "research.jsonl")
-    for label, rows, expected in (
-        ("baseline", baseline_rows, manifest.source_hashes),
-        ("candidate", candidate_rows, candidate_hashes),
-    ):
-        for index, row in enumerate(rows):
-            if (
-                row.get("source_stable") is not True
-                or row.get("source_snapshot") != expected
-                or row.get("source_snapshot_after") != expected
-            ):
-                raise ValueError(
-                    f"{label} source snapshot does not match canonical bytes "
-                    f"for generation row {index + 1}"
-                )
     try:
         change = report.verify_change_assessment(hypothesis, patch)
         research = report.verify_research_evidence(
@@ -269,6 +269,21 @@ def _verify_task8_evidence(
         )
     except (TypeError, ValueError, KeyError) as error:
         raise ValueError(f"score evidence verification failed: {error}") from error
+    for label, rows, source_hashes in (
+        ("baseline", baseline_rows, manifest.source_hashes),
+        ("candidate", candidate_rows, candidate_hashes),
+    ):
+        for index, row in enumerate(rows):
+            expected = _selected_skill_hashes(source_hashes, row["target_skill"])
+            if (
+                row.get("source_stable") is not True
+                or row.get("source_snapshot") != expected
+                or row.get("source_snapshot_after") != expected
+            ):
+                raise ValueError(
+                    f"{label} source snapshot does not match canonical bytes "
+                    f"for generation row {index + 1}"
+                )
     review = None
     if change.human_required:
         try:
@@ -324,6 +339,8 @@ _REPORT_ARTIFACTS = (
     "candidate.patch",
     "candidate.jsonl",
     "scores.json",
+)
+_BLIND_REPORT_ARTIFACTS = (
     "blind_pairs.jsonl",
     "human_ratings.jsonl",
 )
@@ -359,13 +376,16 @@ def _rebuild_approval_report(
             }
         )
     experiment_relative = experiment.relative_to(registry.root.resolve())
+    artifact_names = _REPORT_ARTIFACTS
+    if evidence.change.human_required:
+        artifact_names += _BLIND_REPORT_ARTIFACTS
     raw_artifacts = [
         {
             "relative_path": (experiment_relative / name).as_posix(),
             "sha256": _sha256_path(experiment / name),
             "argv": list(evidence.verification_manifest.command),
         }
-        for name in _REPORT_ARTIFACTS
+        for name in artifact_names
     ]
     return report.build_report(
         manifest=evidence.verification_manifest,
@@ -379,17 +399,21 @@ def _rebuild_approval_report(
         regressions=regressions,
         promotion_files=changed,
         limitations=(
-            "Approval is based on one user's blind ratings and deterministic gates.",
+            (
+                "Approval is based on one user's blind ratings and deterministic gates."
+                if evidence.change.human_required
+                else "Approval is based on deterministic evaluation and static gates."
+            ),
         ),
     )
 
 
 def _validate_approval_report(experiment: Path, expected: str) -> None:
     try:
-        supplied = (experiment / "report.md").read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
+        supplied = (experiment / "report.md").read_bytes()
+    except OSError as error:
         raise ValueError("report.md is unreadable") from error
-    if supplied != expected:
+    if supplied != expected.encode("utf-8"):
         raise ValueError("report.md does not match the exact verified evidence")
 
 
