@@ -215,16 +215,40 @@ def _read_candidate_patch(experiment: Path, expected: str) -> str:
     return supplied
 
 
+@dataclass(frozen=True)
+class _PromotionEvidence:
+    verification_manifest: ExperimentManifest
+    score_evidence: object
+    review: object
+    change: object
+    research: object
+
+
 def _verify_task8_evidence(
     experiment: Path,
     manifest: ExperimentManifest,
     hypothesis: Hypothesis,
     patch: str,
     gate: object,
-) -> None:
+    candidate_hashes: dict[str, str],
+) -> _PromotionEvidence:
     baseline_rows = read_jsonl(experiment / "baseline.jsonl")
     candidate_rows = read_jsonl(experiment / "candidate.jsonl")
     claims = read_jsonl(experiment / "research.jsonl")
+    for label, rows, expected in (
+        ("baseline", baseline_rows, manifest.source_hashes),
+        ("candidate", candidate_rows, candidate_hashes),
+    ):
+        for index, row in enumerate(rows):
+            if (
+                row.get("source_stable") is not True
+                or row.get("source_snapshot") != expected
+                or row.get("source_snapshot_after") != expected
+            ):
+                raise ValueError(
+                    f"{label} source snapshot does not match canonical bytes "
+                    f"for generation row {index + 1}"
+                )
     try:
         change = report.verify_change_assessment(hypothesis, patch)
         research = report.verify_research_evidence(
@@ -284,6 +308,89 @@ def _verify_task8_evidence(
     if readiness.status != ExperimentStatus.READY_FOR_APPROVAL.value:
         reasons = ", ".join(readiness.reasons) or "unknown"
         raise ValueError(f"Task 8 evidence is not ready_for_approval: {reasons}")
+    return _PromotionEvidence(
+        verification_manifest=verification_manifest,
+        score_evidence=score_evidence,
+        review=review,
+        change=change,
+        research=research,
+    )
+
+
+_REPORT_ARTIFACTS = (
+    "research.jsonl",
+    "hypothesis.md",
+    "baseline.jsonl",
+    "candidate.patch",
+    "candidate.jsonl",
+    "scores.json",
+    "blind_pairs.jsonl",
+    "human_ratings.jsonl",
+)
+
+
+def _rebuild_approval_report(
+    experiment: Path,
+    registry: FamilyRegistry,
+    hypothesis: Hypothesis,
+    gate: object,
+    evidence: _PromotionEvidence,
+    changed: tuple[str, ...],
+) -> str:
+    aggregate = evals.verified_score_aggregate(evidence.score_evidence)
+    regressions = []
+    for axis, conditions in aggregate["axes"].items():
+        baseline_failed = conditions["baseline"]["failed"]
+        candidate_failed = conditions["candidate"]["failed"]
+        delta = candidate_failed - baseline_failed
+        regressions.append(
+            {
+                "axis": axis,
+                "baseline_failed": baseline_failed,
+                "candidate_failed": candidate_failed,
+                "delta": delta,
+                "status": (
+                    "regressed"
+                    if delta > 0
+                    else "improved"
+                    if delta < 0
+                    else "unchanged"
+                ),
+            }
+        )
+    experiment_relative = experiment.relative_to(registry.root.resolve())
+    raw_artifacts = [
+        {
+            "relative_path": (experiment_relative / name).as_posix(),
+            "sha256": _sha256_path(experiment / name),
+            "argv": list(evidence.verification_manifest.command),
+        }
+        for name in _REPORT_ARTIFACTS
+    ]
+    return report.build_report(
+        manifest=evidence.verification_manifest,
+        hypothesis=hypothesis,
+        gate=gate,
+        scores=evidence.score_evidence,
+        review=evidence.review,
+        change_assessment=evidence.change,
+        research_evidence=evidence.research,
+        raw_artifacts=raw_artifacts,
+        regressions=regressions,
+        promotion_files=changed,
+        limitations=(
+            "Approval is based on one user's blind ratings and deterministic gates.",
+        ),
+    )
+
+
+def _validate_approval_report(experiment: Path, expected: str) -> None:
+    try:
+        supplied = (experiment / "report.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ValueError("report.md is unreadable") from error
+    if supplied != expected:
+        raise ValueError("report.md does not match the exact verified evidence")
 
 
 def _tree_files(root: Path) -> dict[str, Path]:
@@ -489,8 +596,8 @@ def _commit_replacements(
             staged = None
             if item.source is not None:
                 staged = item.target.with_name(f".{item.target.name}.promotion-stage-{uuid.uuid4().hex}")
-                shutil.copy2(item.source, staged)
                 adjacent_stages.append(staged)
+                shutil.copy2(item.source, staged)
             backup = None
             if item.target.exists():
                 backup = item.target.with_name(f".{item.target.name}.promotion-backup-{uuid.uuid4().hex}")
@@ -608,7 +715,25 @@ def promote(
         candidate_gate = run_static_gate(registry, staged_source, staged_dist)
         if not candidate_gate.passed:
             raise ValueError("candidate static gate failed: " + "; ".join(candidate_gate.errors))
-        _verify_task8_evidence(experiment, manifest, hypothesis, patch, candidate_gate)
+        evidence = _verify_task8_evidence(
+            experiment,
+            manifest,
+            hypothesis,
+            patch,
+            candidate_gate,
+            post_hashes,
+        )
+        _validate_approval_report(
+            experiment,
+            _rebuild_approval_report(
+                experiment,
+                registry,
+                hypothesis,
+                candidate_gate,
+                evidence,
+                changed,
+            ),
+        )
         replacements = _repository_replacements(
             registry, candidate_root, staged_source, staged_dist, changed
         )

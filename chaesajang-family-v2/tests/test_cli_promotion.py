@@ -21,11 +21,13 @@ from optimizer_loop import blind, cli, evals, promote as promote_module, report
 from optimizer_loop.artifacts import write_jsonl
 from optimizer_loop.candidate import create_candidate, write_candidate_patch
 from optimizer_loop.contracts import ExperimentManifest
+from optimizer_loop.hypothesis import Hypothesis
 from optimizer_loop.promote import next_action, promote
 from optimizer_loop.registry import load_registry
 from optimizer_loop.render import render_all
 from optimizer_loop.research import normalize_claim
 from optimizer_loop.snapshot import snapshot_registry
+from optimizer_loop.static_gate import GateResult
 
 
 AXES = (
@@ -115,7 +117,9 @@ def _rating(pair: dict, key: dict) -> dict:
     }
 
 
-def _ready_fixture(tmp_path: Path) -> ReadyFixture:
+def _ready_fixture(
+    tmp_path: Path, *, candidate_uses_baseline_snapshot: bool = False
+) -> ReadyFixture:
     family = tmp_path / "fixture-repository"
     core = family / "demo-core"
     skill = family / "demo-skill"
@@ -149,6 +153,10 @@ def _ready_fixture(tmp_path: Path) -> ReadyFixture:
     candidate_root = create_candidate(registry, experiment)
     (candidate_root / "demo-skill" / "SKILL.md").write_bytes(candidate_bytes)
     write_candidate_patch(registry, candidate_root, experiment / "candidate.patch")
+    candidate_snapshot = {
+        **baseline,
+        "demo-skill/SKILL.md": hashlib.sha256(candidate_bytes).hexdigest(),
+    }
 
     claim = normalize_claim(
         {
@@ -182,7 +190,14 @@ def _ready_fixture(tmp_path: Path) -> ReadyFixture:
     )
 
     baseline_rows = [_generation_row("핵심 결론과 사실 하나.", baseline)]
-    candidate_rows = [_generation_row("더 명확한 핵심 결론과 사실 하나.", baseline)]
+    candidate_rows = [
+        _generation_row(
+            "더 명확한 핵심 결론과 사실 하나.",
+            baseline
+            if candidate_uses_baseline_snapshot
+            else candidate_snapshot,
+        )
+    ]
     write_jsonl(experiment / "baseline.jsonl", baseline_rows)
     write_jsonl(experiment / "candidate.jsonl", candidate_rows)
     case = _case()
@@ -219,8 +234,6 @@ def _ready_fixture(tmp_path: Path) -> ReadyFixture:
     _json(experiment / "blind_key.private.json", private)
     write_jsonl(experiment / "human_ratings.jsonl", ratings)
     _json(experiment / "blind_review.private.json", dict(review.receipt))
-    (experiment / "report.md").write_text("# Verified report\n", encoding="utf-8")
-
     manifest = ExperimentManifest.from_dict(
         {
             "experiment_id": "run-001",
@@ -235,6 +248,29 @@ def _ready_fixture(tmp_path: Path) -> ReadyFixture:
         }
     )
     _json(experiment / "manifest.json", manifest.to_dict())
+    hypothesis = Hypothesis.from_markdown(experiment / "hypothesis.md")
+    gate = GateResult(True, (), {"fixture": True})
+    evidence = promote_module._verify_task8_evidence(
+        experiment,
+        manifest,
+        hypothesis,
+        (experiment / "candidate.patch").read_text(encoding="utf-8"),
+        gate,
+        baseline
+        if candidate_uses_baseline_snapshot
+        else candidate_snapshot,
+    )
+    (experiment / "report.md").write_text(
+        promote_module._rebuild_approval_report(
+            experiment,
+            registry,
+            hypothesis,
+            gate,
+            evidence,
+            ("demo-skill/SKILL.md",),
+        ),
+        encoding="utf-8",
+    )
     return ReadyFixture(
         family, experiment, canonical, registry, original, candidate_bytes
     )
@@ -365,6 +401,37 @@ def test_promotion_requires_exact_direct_child_experiment_directory(tmp_path):
         promote(nested, fixture.registry, approved_by_user=True)
 
     assert fixture.canonical.read_bytes() == fixture.original
+
+
+def test_promotion_rejects_candidate_evidence_bound_to_baseline_snapshot(
+    tmp_path,
+):
+    fixture = _ready_fixture(
+        tmp_path, candidate_uses_baseline_snapshot=True
+    )
+    before_manifest = (fixture.experiment / "manifest.json").read_bytes()
+
+    with pytest.raises(ValueError, match="candidate.*source snapshot"):
+        promote(fixture.experiment, fixture.registry, approved_by_user=True)
+
+    assert fixture.canonical.read_bytes() == fixture.original
+    assert (fixture.experiment / "manifest.json").read_bytes() == before_manifest
+    assert not (fixture.experiment / "promotion.json").exists()
+
+
+def test_promotion_rejects_tampered_or_stale_report_before_writes(tmp_path):
+    fixture = _ready_fixture(tmp_path)
+    (fixture.experiment / "report.md").write_text(
+        "# stale but plausible approval report\n", encoding="utf-8"
+    )
+    before_manifest = (fixture.experiment / "manifest.json").read_bytes()
+
+    with pytest.raises(ValueError, match="report.md.*exact.*evidence"):
+        promote(fixture.experiment, fixture.registry, approved_by_user=True)
+
+    assert fixture.canonical.read_bytes() == fixture.original
+    assert (fixture.experiment / "manifest.json").read_bytes() == before_manifest
+    assert not (fixture.experiment / "promotion.json").exists()
 
 
 def test_explicit_install_root_updates_owned_files_and_preserves_extras(tmp_path):
@@ -528,6 +595,32 @@ def test_post_write_hash_failure_rolls_back_every_target(tmp_path, monkeypatch):
         promote(fixture.experiment, fixture.registry, approved_by_user=True)
 
     assert fixture.canonical.read_bytes() == fixture.original
+    assert json.loads(
+        (fixture.experiment / "manifest.json").read_text("utf-8")
+    )["status"] == "invalid"
+
+
+def test_partial_adjacent_stage_is_removed_when_copy_fails(tmp_path, monkeypatch):
+    fixture = _ready_fixture(tmp_path)
+    real_copy2 = promote_module.shutil.copy2
+    injected = False
+
+    def partial_copy(source, destination, *args, **kwargs):
+        nonlocal injected
+        destination = Path(destination)
+        if ".promotion-stage-" in destination.name and not injected:
+            injected = True
+            destination.write_bytes(b"partial stage bytes")
+            raise OSError("injected partial copy failure")
+        return real_copy2(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(promote_module.shutil, "copy2", partial_copy)
+
+    with pytest.raises(OSError, match="injected partial copy failure"):
+        promote(fixture.experiment, fixture.registry, approved_by_user=True)
+
+    assert fixture.canonical.read_bytes() == fixture.original
+    assert not list(fixture.family.rglob("*.promotion-stage-*"))
     assert json.loads(
         (fixture.experiment / "manifest.json").read_text("utf-8")
     )["status"] == "invalid"
