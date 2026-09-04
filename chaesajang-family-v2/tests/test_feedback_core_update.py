@@ -29,18 +29,21 @@ class FeedbackCoreUpdateTests(unittest.TestCase):
                     "chaesajang-family-v2/feedback/completed/FB-001_좋은_문장_뒤_과잉_해설.md",
                     "excerpt_only",
                     "6f0f486af4a33a3416b2da7b676df79a0c9ce6c5c457d6c583bae2c1743f0a32",
+                    "supplied_historical_unverifiable",
                 ),
                 "FB-002": (
                     "6104c7ad35606311b463779666be01ed1b06f5ddbabcb0e1885895512b830111",
                     "chaesajang-family-v2/feedback/completed/FB-002_SNS_비교_글_종합_리뷰.md",
                     "mutated_snapshot",
                     "618c6aecc912cc78ef34d9a446676a93c180f5af725d3b6b78724334f6a962d8",
+                    "supplied_historical_unverifiable",
                 ),
                 "FB-003": (
                     "a44520655f0698bdfc36dc3399b0b0891020966614afd8074c47b6ce4a9b8e15",
                     "chaesajang-family-v2/feedback/completed/FB-003_죽음과_유한성_글_종합_리뷰.md",
                     "documented_snapshot",
                     "e828e5d031859818a3ea62886af28f408e44667523d65a305c177623382ae9c8",
+                    "supplied_historical_unverifiable",
                 ),
             }
             cases = []
@@ -51,13 +54,16 @@ class FeedbackCoreUpdateTests(unittest.TestCase):
                 cases.extend(loaded)
 
             for case in cases:
-                before_hash, relative, mode, source_hash = expected[case.case_id]
+                before_hash, relative, mode, source_hash, verifiability = expected[case.case_id]
                 self.assertEqual(case.target_skill, "chaesajang-style")
                 self.assertEqual(case.source_group, "feedback/fb-001-003-ap11")
                 self.assertEqual(case.before_hash, before_hash)
                 self.assertEqual(case.provenance["path"], relative)
                 self.assertEqual(case.provenance["mode"], mode)
                 self.assertEqual(case.provenance["source_sha256"], source_hash)
+                self.assertEqual(
+                    case.provenance["before_hash_verifiability"], verifiability
+                )
                 self.assertIn("manual", case.provenance["note"])
                 self.assertIn("not_scored", case.provenance["note"])
                 normalized = (ROOT.parent / relative).read_text(encoding="utf-8").replace("\r\n", "\n")
@@ -143,6 +149,7 @@ class FeedbackCoreUpdateTests(unittest.TestCase):
                     "path": "C:/outside.md",
                     "mode": "excerpt_only",
                     "source_sha256": "b" * 64,
+                    "before_hash_verifiability": "supplied_historical_unverifiable",
                     "note": "manual and not_scored",
                 },
             }

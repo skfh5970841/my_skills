@@ -234,18 +234,27 @@ def _ready_fixture(
     write_jsonl(experiment / "baseline.jsonl", baseline_rows)
     write_jsonl(experiment / "candidate.jsonl", candidate_rows)
     case = _case()
+    canonical_case = {
+        "case_id": case.case_id,
+        "target_skill": case.target_skill,
+        "source_group": case.source_group,
+        "generator_brief": case.generator_brief,
+        "axes": list(case.axes),
+        "risk": case.risk,
+        "deterministic_checks": dict(case.deterministic_checks),
+        "evaluator_reference": case.evaluator_reference,
+    }
+    canonical_evals = family / "evals" / "golden"
+    canonical_evals.mkdir(parents=True)
+    (canonical_evals / "case-one.jsonl").write_text(
+        json.dumps(canonical_case, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     evaluations = [
         evals.make_deterministic_row(case, baseline_rows[0], "baseline"),
         evals.make_deterministic_row(case, candidate_rows[0], "candidate"),
     ]
-    expected_pairs = [
-        {
-            "case_id": case.case_id,
-            "target_skill": case.target_skill,
-            "split": case.split,
-            "repeat": 0,
-        }
-    ]
+    expected_pairs = [evals.expected_pair(case, repeat=0)]
     aggregate = evals.aggregate_scores(evaluations, expected_pairs=expected_pairs)
     _json(
         experiment / "scores.json",
@@ -459,6 +468,66 @@ def test_promotion_rejects_candidate_evidence_bound_to_baseline_snapshot(
     assert fixture.canonical.read_bytes() == fixture.original
     assert (fixture.experiment / "manifest.json").read_bytes() == before_manifest
     assert not (fixture.experiment / "promotion.json").exists()
+
+
+def test_promotion_rejects_same_identity_with_weaker_canonical_case_evidence(tmp_path):
+    fixture = _ready_fixture(tmp_path)
+    canonical = fixture.family / "evals" / "golden" / "case-one.jsonl"
+    weaker = json.loads(canonical.read_text(encoding="utf-8"))
+    weaker["deterministic_checks"] = {"output_present": True}
+    canonical.write_text(
+        json.dumps(weaker, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="canonical.*case.*evidence"):
+        promote(fixture.experiment, fixture.registry, approved_by_user=True)
+
+    assert fixture.canonical.read_bytes() == fixture.original
+    assert not (fixture.experiment / "promotion.json").exists()
+
+
+def test_promotion_skips_only_the_known_dev_policy_fixture(tmp_path):
+    policy_fixture = (
+        '{"case_id":"optimizer-no-evidence","policy":"no_evidence_no_candidate",'
+        '"expected_error":"claims must not be empty"}\n'
+        '{"case_id":"optimizer-low-risk-packaging",'
+        '"policy":"low_risk_packaging_skips_human_blind",'
+        '"expected_human_required":false}\n'
+        '{"case_id":"optimizer-persona-change",'
+        '"policy":"persona_change_requires_human_blind",'
+        '"expected_human_required":true}\n'
+        '{"case_id":"optimizer-failed-command",'
+        '"policy":"failed_command_is_blocked_external",'
+        '"expected_status":"blocked_external"}\n'
+        '{"case_id":"optimizer-unapproved-promotion",'
+        '"policy":"unapproved_promotion_is_denied",'
+        '"expected_error":"promotion requires explicit user approval"}\n'
+    )
+    valid = _ready_fixture(tmp_path / "valid")
+    valid_policy = valid.family / "evals" / "dev" / "optimizer_smoke.jsonl"
+    valid_policy.parent.mkdir(parents=True)
+    valid_policy.write_text(policy_fixture, encoding="utf-8")
+
+    result = promote(valid.experiment, valid.registry, approved_by_user=True)
+
+    assert result["changed_paths"] == ["demo-skill/SKILL.md"]
+
+    malformed = _ready_fixture(tmp_path / "malformed")
+    malformed_dev = malformed.family / "evals" / "dev"
+    malformed_dev.mkdir(parents=True)
+    (malformed_dev / "optimizer_smoke.jsonl").write_text(
+        policy_fixture, encoding="utf-8"
+    )
+    (malformed_dev / "not-an-eval-case.jsonl").write_text(
+        '{"case_id":"malformed"}\n', encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="score evidence.*missing required"):
+        promote(malformed.experiment, malformed.registry, approved_by_user=True)
+
+    assert malformed.canonical.read_bytes() == malformed.original
+    assert not (malformed.experiment / "promotion.json").exists()
 
 
 def test_multi_skill_promotion_accepts_selected_skill_snapshots_and_rejects_wrong_skill(

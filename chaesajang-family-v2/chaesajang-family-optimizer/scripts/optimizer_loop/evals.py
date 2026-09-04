@@ -57,10 +57,13 @@ _REQUIRED_FIELDS = frozenset(
     }
 )
 _OPTIONAL_FIELDS = frozenset({"evaluator_reference", "before_hash", "provenance"})
-_PROVENANCE_FIELDS = frozenset({"path", "mode", "source_sha256", "note"})
+_PROVENANCE_FIELDS = frozenset(
+    {"path", "mode", "source_sha256", "note", "before_hash_verifiability"}
+)
 _PROVENANCE_MODES = frozenset(
     {"excerpt_only", "mutated_snapshot", "documented_snapshot"}
 )
+_BEFORE_HASH_VERIFIABILITY = "supplied_historical_unverifiable"
 _CHECK_KEYS = frozenset(
     {
         "output_present",
@@ -283,7 +286,8 @@ def _normalize_provenance(value: object) -> Mapping[str, str]:
         missing = _PROVENANCE_FIELDS - set(value)
         unknown = set(value) - _PROVENANCE_FIELDS
         raise ValueError(
-            "provenance must contain exactly path, mode, source_sha256, and note; "
+            "provenance must contain exactly path, mode, source_sha256, note, and "
+            "before_hash_verifiability; "
             f"missing={sorted(missing)}; unknown={sorted(unknown)}"
         )
     path = _required_text(value["path"], "provenance.path")
@@ -305,12 +309,23 @@ def _normalize_provenance(value: object) -> Mapping[str, str]:
     if _SHA256_RE.fullmatch(source_sha256) is None:
         raise ValueError("provenance.source_sha256 must be a SHA-256 hex digest")
     note = _required_text(value["note"], "provenance.note", narrative=True)
+    before_hash_verifiability = _required_text(
+        value["before_hash_verifiability"],
+        "provenance.before_hash_verifiability",
+        identifier=True,
+    )
+    if before_hash_verifiability != _BEFORE_HASH_VERIFIABILITY:
+        raise ValueError(
+            "provenance.before_hash_verifiability must be "
+            f"{_BEFORE_HASH_VERIFIABILITY}"
+        )
     return MappingProxyType(
         {
             "path": path,
             "mode": mode,
             "source_sha256": source_sha256,
             "note": note,
+            "before_hash_verifiability": before_hash_verifiability,
         }
     )
 
@@ -857,6 +872,47 @@ def _stable_hash(value: Mapping[str, object]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def canonical_case_evidence(case: EvalCase) -> dict[str, object]:
+    """Return every immutable EvalCase behavior/evidence field for commitment."""
+
+    if type(case) is not EvalCase:
+        raise TypeError("case must be an EvalCase")
+    return {
+        "schema_version": 1,
+        "case_id": case.case_id,
+        "target_skill": case.target_skill,
+        "source_group": case.source_group,
+        "generator_brief": case.generator_brief,
+        "axes": list(case.axes),
+        "risk": case.risk,
+        "deterministic_checks": dict(case.deterministic_checks),
+        "evaluator_reference": case.evaluator_reference,
+        "split": case.split,
+        "before_hash": case.before_hash,
+        "provenance": None if case.provenance is None else dict(case.provenance),
+    }
+
+
+def case_evidence_digest(case: EvalCase) -> str:
+    """Return the canonical SHA-256 commitment for a complete EvalCase."""
+
+    return _stable_hash(canonical_case_evidence(case))
+
+
+def expected_pair(case: EvalCase, repeat: int) -> dict[str, object]:
+    """Build an exact deterministic inventory row bound to one EvalCase."""
+
+    if isinstance(repeat, bool) or not isinstance(repeat, int) or repeat < 0:
+        raise ValueError("repeat must be a non-negative integer")
+    return {
+        "case_id": case.case_id,
+        "target_skill": case.target_skill,
+        "split": case.split,
+        "repeat": repeat,
+        "case_evidence_sha256": case_evidence_digest(case),
+    }
+
+
 def validate_generation_row(
     case: EvalCase, row: Mapping[str, object], label: str = "generation"
 ) -> None:
@@ -965,6 +1021,7 @@ def make_deterministic_row(
         "repeat": repeat,
         "pair_id": generation_pair_id(case, repeat, parity_signature),
         "parity_signature": parity_signature,
+        "case_evidence_sha256": case_evidence_digest(case),
         "generation_sha256": _stable_hash(dict(generation_row)),
         "scores": score_deterministic(case, generation_row["output"]),
     }
@@ -1171,6 +1228,7 @@ def _validate_deterministic_row(row: Mapping[str, object], index: int) -> list[s
         "repeat",
         "pair_id",
         "parity_signature",
+        "case_evidence_sha256",
         "scores",
     }
     optional = {"generation_sha256"}
@@ -1193,7 +1251,7 @@ def _validate_deterministic_row(row: Mapping[str, object], index: int) -> list[s
     repeat = row.get("repeat")
     if isinstance(repeat, bool) or not isinstance(repeat, int) or repeat < 0:
         errors.append(f"{prefix}.repeat must be a non-negative integer")
-    for key in ("pair_id", "parity_signature"):
+    for key in ("pair_id", "parity_signature", "case_evidence_sha256"):
         value = row.get(key)
         if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
             errors.append(f"{prefix}.{key} must be a SHA-256 hex digest")
@@ -1336,7 +1394,7 @@ def _aggregate_judge_rows(rows: list[dict], deterministic_pairs: Mapping[str, di
 
 def _validate_expected_pair_inventory(
     expected_pairs: Iterable[Mapping[str, object]],
-) -> frozenset[tuple[str, str, str, int]]:
+) -> frozenset[tuple[str, str, str, int, str]]:
     """Validate the complete case/skill/split/repeat inventory for an eval run."""
 
     if isinstance(expected_pairs, (str, bytes, Mapping)):
@@ -1346,8 +1404,10 @@ def _validate_expected_pair_inventory(
     except TypeError as exc:
         raise ValueError("expected_pairs must be an iterable of mappings") from exc
 
-    required_keys = frozenset({"case_id", "target_skill", "split", "repeat"})
-    inventory: set[tuple[str, str, str, int]] = set()
+    required_keys = frozenset(
+        {"case_id", "target_skill", "split", "repeat", "case_evidence_sha256"}
+    )
+    inventory: set[tuple[str, str, str, int, str]] = set()
     executions: set[tuple[str, int]] = set()
     for index, pair in enumerate(materialized):
         if not isinstance(pair, Mapping):
@@ -1394,8 +1454,17 @@ def _validate_expected_pair_inventory(
             raise ValueError(
                 f"invalid expected deterministic pair at index {index}: repeat"
             )
+        case_evidence_sha256 = pair["case_evidence_sha256"]
+        if (
+            not isinstance(case_evidence_sha256, str)
+            or _SHA256_RE.fullmatch(case_evidence_sha256) is None
+        ):
+            raise ValueError(
+                f"invalid expected deterministic pair at index {index}: "
+                "case_evidence_sha256"
+            )
 
-        identity = (case_id, target_skill, split, repeat)
+        identity = (case_id, target_skill, split, repeat, case_evidence_sha256)
         execution = (case_id, repeat)
         if identity in inventory or execution in executions:
             raise ValueError(
@@ -1467,7 +1536,13 @@ def aggregate_scores(
             )
         baseline = conditions["baseline"]
         candidate = conditions["candidate"]
-        for field in ("target_skill", "split", "parity_signature", "pair_id"):
+        for field in (
+            "target_skill",
+            "split",
+            "parity_signature",
+            "pair_id",
+            "case_evidence_sha256",
+        ):
             if baseline[field] != candidate[field]:
                 raise ValueError(
                     f"deterministic pair parity mismatch for {case_id} repeat {repeat}: {field}"
@@ -1515,6 +1590,7 @@ def aggregate_scores(
             row["target_skill"],
             row["split"],
             row["repeat"],
+            row["case_evidence_sha256"],
         )
         for row in deterministic_pairs.values()
     )
@@ -1580,7 +1656,7 @@ def aggregate_scores(
     expected_golden_pair_count = (
         None
         if expected_inventory is None
-        else sum(1 for _, _, split, _ in expected_inventory if split == "golden")
+        else sum(1 for _, _, split, _, _ in expected_inventory if split == "golden")
     )
     hard_gates_passed = (
         False

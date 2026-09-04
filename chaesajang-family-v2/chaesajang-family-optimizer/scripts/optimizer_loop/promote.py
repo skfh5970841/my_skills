@@ -238,8 +238,101 @@ def _selected_skill_hashes(
     return dict(sorted(selected.items()))
 
 
+def _canonical_eval_cases(registry: FamilyRegistry) -> dict[tuple[str, str, str], object]:
+    """Reload canonical EvalCases from the audited repository root fail-closed."""
+
+    root = registry.root.resolve()
+    evaluation_root = root / "evals"
+    _audit_tree(root, evaluation_root, "canonical evaluation root")
+    cases: dict[tuple[str, str, str], object] = {}
+    seen_case_ids: set[str] = set()
+    for split in sorted(evals.SPLITS):
+        split_root = evaluation_root / split
+        if not split_root.exists():
+            continue
+        _audit_tree(root, split_root, f"canonical {split} evaluation root")
+        for path in sorted(split_root.glob("*.jsonl"), key=lambda item: item.name):
+            _audit_path(root, path, "canonical evaluation record")
+            if path.relative_to(evaluation_root).as_posix() == "dev/optimizer_smoke.jsonl":
+                continue
+            for case in evals.load_cases(path, split):
+                if case.case_id in seen_case_ids:
+                    raise ValueError(
+                        f"duplicate canonical case_id: {case.case_id}"
+                    )
+                identity = (case.case_id, case.target_skill, case.split)
+                if identity in cases:
+                    raise ValueError(f"conflicting canonical case identity: {identity}")
+                seen_case_ids.add(case.case_id)
+                cases[identity] = case
+    if not cases:
+        raise ValueError("canonical evaluation root has no JSONL cases")
+    return cases
+
+
+def _trusted_expected_pairs(
+    registry: FamilyRegistry, supplied_pairs: object
+) -> list[dict[str, object]]:
+    """Bind persisted selections to exact canonical EvalCase digests."""
+
+    if isinstance(supplied_pairs, (str, bytes, bytearray, dict)):
+        raise ValueError("canonical case evidence requires an expected-pair sequence")
+    try:
+        pairs = list(supplied_pairs)
+    except TypeError as error:
+        raise ValueError(
+            "canonical case evidence requires an expected-pair sequence"
+        ) from error
+    canonical = _canonical_eval_cases(registry)
+    trusted: list[dict[str, object]] = []
+    seen: set[tuple[str, str, str, int]] = set()
+    required = {
+        "case_id",
+        "target_skill",
+        "split",
+        "repeat",
+        "case_evidence_sha256",
+    }
+    for index, pair in enumerate(pairs):
+        if not isinstance(pair, dict) or set(pair) != required:
+            raise ValueError(
+                f"canonical case evidence expected pair {index + 1} has invalid schema"
+            )
+        case_id = pair["case_id"]
+        target_skill = pair["target_skill"]
+        split = pair["split"]
+        repeat = pair["repeat"]
+        if (
+            not isinstance(case_id, str)
+            or not isinstance(target_skill, str)
+            or not isinstance(split, str)
+            or type(repeat) is not int
+            or repeat < 0
+        ):
+            raise ValueError(
+                f"canonical case evidence expected pair {index + 1} has invalid identity"
+            )
+        identity = (case_id, target_skill, split, repeat)
+        if identity in seen:
+            raise ValueError(f"duplicate canonical case selection: {identity}")
+        seen.add(identity)
+        case = canonical.get((case_id, target_skill, split))
+        if case is None:
+            raise ValueError(f"canonical case evidence has unknown identity: {identity}")
+        expected = evals.expected_pair(case, repeat)
+        if pair != expected:
+            raise ValueError(
+                "canonical case evidence does not match the persisted expected pair"
+            )
+        trusted.append(expected)
+    if not trusted:
+        raise ValueError("canonical case evidence requires at least one expected pair")
+    return trusted
+
+
 def _verify_task8_evidence(
     experiment: Path,
+    registry: FamilyRegistry,
     manifest: ExperimentManifest,
     hypothesis: Hypothesis,
     patch: str,
@@ -260,12 +353,15 @@ def _verify_task8_evidence(
     if set(scores) != {"aggregate", "evaluation_rows", "expected_pairs"}:
         raise ValueError("score evidence must use the exact resumable schema")
     try:
+        trusted_expected_pairs = _trusted_expected_pairs(
+            registry, scores["expected_pairs"]
+        )
         score_evidence = evals.verify_score_evidence(
             scores["aggregate"],
             scores["evaluation_rows"],
             baseline_rows,
             candidate_rows,
-            expected_pairs=scores["expected_pairs"],
+            expected_pairs=trusted_expected_pairs,
         )
     except (TypeError, ValueError, KeyError) as error:
         raise ValueError(f"score evidence verification failed: {error}") from error
@@ -400,9 +496,9 @@ def _rebuild_approval_report(
         promotion_files=changed,
         limitations=(
             (
-                "Approval is based on one user's blind ratings and deterministic gates."
+                "one_person_blind_review"
                 if evidence.change.human_required
-                else "Approval is based on deterministic evaluation and static gates."
+                else "deterministic_static_gates_only"
             ),
         ),
     )
@@ -741,6 +837,7 @@ def promote(
             raise ValueError("candidate static gate failed: " + "; ".join(candidate_gate.errors))
         evidence = _verify_task8_evidence(
             experiment,
+            registry,
             manifest,
             hypothesis,
             patch,

@@ -276,6 +276,13 @@ def _verified_scores_from_aggregate(
             "target_skill": target_skill,
             "split": "golden" if index < golden_count else "dev",
             "repeat": repeat,
+            "case_evidence_sha256": _test_hash(
+                {
+                    "case_id": case_id,
+                    "target_skill": target_skill,
+                    "split": "golden" if index < golden_count else "dev",
+                }
+            ),
         }
         for index, (case_id, target_skill, repeat) in enumerate(identities)
     ]
@@ -350,7 +357,10 @@ def _verified_scores_from_aggregate(
             )
             pair_id = _test_hash(
                 {
-                    **expected_row,
+                    "case_id": expected_row["case_id"],
+                    "target_skill": expected_row["target_skill"],
+                    "split": expected_row["split"],
+                    "repeat": expected_row["repeat"],
                     "parity_signature": parity_signature,
                 }
             )
@@ -994,7 +1004,7 @@ def _report_inputs(loop_modules):
         _generation_row("case-one", 0, "new one"),
     ]
     inputs = _v2_report_inputs(loop_modules, baseline, candidate)
-    inputs["limitations"] = ["<script>alert('one user')</script>"]
+    inputs["limitations"] = ["one_person_blind_review"]
     return inputs
 
 
@@ -1027,7 +1037,7 @@ def test_build_report_is_pure_deterministic_escaped_and_complete(loop_modules, t
     assert "not_scored" in first
     assert "0" in first
     assert "이 결과는 사용자 1인의 선호이며, 통계적 우월성을 의미하지 않습니다." in first
-    assert "&lt;script&gt;" in first
+    assert "One-user blind review is directional only" in first
     assert "<script>" not in first
     assert "candidate_label" not in first
     assert "Blind seed" not in first
@@ -2058,7 +2068,7 @@ def _v2_report_inputs(loop_modules, baseline_rows, candidate_rows):
         ],
         "regressions": [],
         "promotion_files": ["chaesajang-core/persona_core.md"],
-        "limitations": ["One evaluator."],
+        "limitations": ["one_person_blind_review"],
     }
 
 
@@ -2089,7 +2099,7 @@ def test_v2_report_derives_safe_aggregate_blind_summary_without_private_metadata
     assert "Private-key digest" not in rendered
 
 
-def test_v2_report_renders_markdown_injection_inert_and_redacts_every_private_path_form(
+def test_v2_report_rejects_private_free_text_limitations(
     loop_modules, baseline_rows, candidate_rows
 ):
     _, _, _, report, _ = loop_modules
@@ -2111,31 +2121,10 @@ def test_v2_report_renders_markdown_injection_inert_and_redacts_every_private_pa
     inputs["research_evidence"] = report.verify_research_evidence(
         inputs["manifest"].experiment_id, inputs["hypothesis"], [claim]
     )
-    inputs["limitations"] = [
-        "/secret",
-        "C:\\secret\\file",
-        "C:relative-secret",
-        "\\\\server\\share\\secret",
-        "//server/share/secret",
-        "file:///secret",
-        "~/secret",
-    ]
-    rendered = report.build_report(**inputs)
+    inputs["limitations"] = ["private seed: 7 /secret"]
 
-    assert "](file:///secret)" not in rendered
-    assert "![pixel](" not in rendered
-    assert "[click](" not in rendered
-    for leaked in (
-        "/secret",
-        "C:\\secret",
-        "C:relative-secret",
-        "\\\\server\\share",
-        "//server/share",
-        "file:///secret",
-        "~/secret",
-    ):
-        assert leaked not in rendered
-    assert "[REDACTED_PATH]" in rendered
+    with pytest.raises(ValueError, match="allowed limitation code"):
+        report.build_report(**inputs)
 
 
 def test_v2_report_neutralizes_multiline_markdown_block_controls(
@@ -2300,7 +2289,7 @@ def test_v2_terminal_reports_withhold_poisoned_unrelated_evidence(
             "raw_artifacts": [{"secret": secret}],
             "regressions": [{"secret": secret}],
             "promotion_files": ["../private-promotion"],
-            "limitations": [secret],
+            "limitations": ["one_person_blind_review"],
         }
     )
 
@@ -2331,7 +2320,7 @@ def test_v2_invalid_evidence_report_does_not_validate_or_leak_later_poison(
             "raw_artifacts": object(),
             "regressions": [{"secret": secret}],
             "promotion_files": ["../private-promotion"],
-            "limitations": [secret],
+            "limitations": ["one_person_blind_review"],
         }
     )
 

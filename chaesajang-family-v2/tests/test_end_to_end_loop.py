@@ -221,14 +221,7 @@ def test_dry_run_reaches_ready_without_touching_canonical(tmp_path, monkeypatch)
         evals.make_deterministic_row(case, baseline_rows[0], "baseline"),
         evals.make_deterministic_row(case, candidate_rows[0], "candidate"),
     ]
-    expected_pairs = [
-        {
-            "case_id": case.case_id,
-            "target_skill": case.target_skill,
-            "split": "golden",
-            "repeat": 0,
-        }
-    ]
+    expected_pairs = [evals.expected_pair(case, repeat=0)]
     aggregate = evals.aggregate_scores(
         evaluation_rows, expected_pairs=expected_pairs
     )

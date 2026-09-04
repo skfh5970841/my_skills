@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import math
 import sys
@@ -86,11 +87,35 @@ def output_row(text, case_id="case-1", **overrides):
 
 
 def expected_pair(case, repeat=0):
+    evidence = {
+        "schema_version": 1,
+        "case_id": case.case_id,
+        "target_skill": case.target_skill,
+        "source_group": case.source_group,
+        "generator_brief": case.generator_brief,
+        "axes": list(case.axes),
+        "risk": case.risk,
+        "deterministic_checks": dict(case.deterministic_checks),
+        "evaluator_reference": case.evaluator_reference,
+        "split": case.split,
+        "before_hash": case.before_hash,
+        "provenance": None if case.provenance is None else dict(case.provenance),
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            evidence,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     return {
         "case_id": case.case_id,
         "target_skill": case.target_skill,
         "split": case.split,
         "repeat": repeat,
+        "case_evidence_sha256": digest,
     }
 
 

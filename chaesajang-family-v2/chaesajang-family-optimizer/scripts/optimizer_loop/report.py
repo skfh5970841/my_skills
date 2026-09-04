@@ -43,6 +43,20 @@ DECISIONS = frozenset(
 ONE_PERSON_DISCLAIMER = (
     "이 결과는 사용자 1인의 선호이며, 통계적 우월성을 의미하지 않습니다."
 )
+LIMITATION_MESSAGES = MappingProxyType(
+    {
+        "one_person_blind_review": (
+            "One-user blind review is directional only and is not statistically "
+            "generalizable. / 사용자 1인의 블라인드 검토는 방향성 참고용이며 "
+            "통계적으로 일반화할 수 없습니다."
+        ),
+        "deterministic_static_gates_only": (
+            "Approval uses deterministic evaluation and static gates only; no "
+            "human blind review was required. / 승인은 결정론적 평가와 정적 게이트만 "
+            "사용하며 사람의 블라인드 검토는 요구되지 않았습니다."
+        ),
+    }
+)
 MAX_REPORT_EXCERPT_CHARACTERS = 1_000
 MAX_DIFF_CHARACTERS = 12_000
 
@@ -953,6 +967,20 @@ def _text_items(value: object, label: str, *, allow_empty: bool) -> list[str]:
     return normalized
 
 
+def _limitation_items(value: object) -> list[str]:
+    codes = _sequence(value, "limitations", allow_empty=False)
+    messages: list[str] = []
+    seen: set[str] = set()
+    for index, code in enumerate(codes):
+        if not isinstance(code, str) or code not in LIMITATION_MESSAGES:
+            raise ValueError(f"limitations[{index}] must be an allowed limitation code")
+        if code in seen:
+            raise ValueError(f"limitations[{index}] duplicates an allowed limitation code")
+        seen.add(code)
+        messages.append(LIMITATION_MESSAGES[code])
+    return messages
+
+
 def _regression_items(value: object) -> list[str]:
     rows = _sequence(value, "regressions")
     normalized: list[str] = []
@@ -1058,6 +1086,7 @@ def build_report(
         change_assessment,
         research_evidence,
     )
+    limitation_rows = _limitation_items(limitations)
     if readiness.status in {"invalid", "blocked_external"}:
         return _terminal_diagnostic_report(readiness, manifest)
     try:
@@ -1078,7 +1107,6 @@ def build_report(
             )
         }
     )
-    limitation_rows = _text_items(limitations, "limitations", allow_empty=False)
     static_errors = (
         _text_items(gate.errors, "gate.errors", allow_empty=True)
         if isinstance(gate, GateResult)
