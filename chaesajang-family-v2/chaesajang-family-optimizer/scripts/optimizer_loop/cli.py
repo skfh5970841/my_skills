@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .promote import _audit_tree, _load_manifest, next_action, promote
+from .research_prompt import ResearchPromptRequest, build_research_prompt
 from .registry import load_registry
 
 
@@ -33,6 +34,27 @@ def _parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--experiment", required=True)
     bootstrap.add_argument("--model", required=True)
     bootstrap.add_argument("--reasoning", required=True)
+
+    research_prompt = commands.add_parser("research-prompt")
+    research_prompt.add_argument("--target", required=True)
+    research_prompt.add_argument("--problem", required=True)
+    research_prompt.add_argument(
+        "--local-evidence", action="append", required=True, dest="local_evidence"
+    )
+    research_prompt.add_argument(
+        "--scope", choices=("initial", "delta", "full-refresh"), required=True
+    )
+    research_prompt.add_argument("--checked-at", required=True)
+    research_prompt.add_argument("--since")
+    research_prompt.add_argument(
+        "--refresh-reason",
+        choices=(
+            "runtime-change",
+            "evidence-conflict",
+            "corpus-expansion",
+            "user-request",
+        ),
+    )
 
     cycle = commands.add_parser("cycle")
     cycle.add_argument("--experiment", required=True)
@@ -60,6 +82,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Validate, read, and print deterministic state; only promote may write."""
     args = _parser().parse_args(argv)
     registry = load_registry(args.root)
+    if args.mode == "research-prompt":
+        prompt = build_research_prompt(
+            ResearchPromptRequest(
+                target=args.target,
+                problem=args.problem,
+                local_evidence=tuple(args.local_evidence),
+                scope=args.scope,
+                checked_at=args.checked_at,
+                since=args.since,
+                refresh_reason=args.refresh_reason,
+            )
+        )
+        print(prompt, end="")
+        return 0
     experiment = _experiment_dir(registry, args.experiment)
     if args.mode == "bootstrap":
         print(

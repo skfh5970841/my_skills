@@ -949,7 +949,7 @@ def test_report_mode_rejects_symlinked_artifact_and_remains_read_only(
     assert capsys.readouterr().out == ""
 
 
-def test_cli_help_lists_five_modes_and_promote_requires_approval():
+def test_cli_help_lists_six_modes_and_promote_requires_approval():
     loop = SCRIPTS / "loop.py"
     help_result = subprocess.run(
         [sys.executable, str(loop), "--help"],
@@ -967,7 +967,14 @@ def test_cli_help_lists_five_modes_and_promote_requires_approval():
     assert help_result.returncode == 0
     assert all(
         mode in help_result.stdout
-        for mode in ("bootstrap", "cycle", "resume", "report", "promote")
+        for mode in (
+            "bootstrap",
+            "research-prompt",
+            "cycle",
+            "resume",
+            "report",
+            "promote",
+        )
     )
     assert missing_approval.returncode != 0
     assert "--approved-by-user" in missing_approval.stderr
