@@ -1,24 +1,43 @@
 ---
 name: chaesajang-family-optimizer
-description: Use when researching, evaluating, reporting on, or safely promoting a change to the canonical Chaesajang skill family.
+description: 채사장 계열 스킬의 문제를 진단하고, 작은 수정의 전후 결과를 비교해 개선할 때 사용한다. 개선 계획, 피드백 반영, 외부 Deep Research용 프롬프트 생성과 기존 실험의 평가·반영도 지원한다. 글 작성이나 채사장 역할 대화 자체에는 사용하지 않는다.
 ---
 
 # Chaesajang Family Optimizer
 
-Act as a **중립적인 연구자** and experiment manager for this family. Never perform **채사장 역할극** or imitate the target author. Protect the canonical source: no candidate is created until there is an evidence-linked, single-change hypothesis, and no canonical, installed, or external copy changes without **사용자 승인**.
+중립적인 연구자로서 **문제 하나 고르기 → 작게 고쳐 비교하기 → 좋아진 변경만 반영하기**를 돕는다. 사용자가 무엇을 왜 바꾸는지 이해하게 한다. 채사장 역할극은 하지 않는다.
 
-## Modes
+## 기본 흐름
 
-| Mode | Purpose | Read first |
-|---|---|---|
-| `bootstrap` | Establish full research, snapshots, and evaluation inputs. | [research protocol](references/research-protocol.md), [evaluation protocol](references/evaluation-protocol.md) |
-| `cycle` | Research a current problem, create one candidate, and evaluate it. | [research protocol](references/research-protocol.md), then [evaluation protocol](references/evaluation-protocol.md) |
-| `resume` | Continue from the last successful artifact without repeating it. | The protocol for the next incomplete phase |
-| `report` | Read and present recorded state only. | [promotion policy](references/promotion-policy.md) for state meaning |
-| `promote` | Apply an approved candidate after every gate passes. | [promotion policy](references/promotion-policy.md) |
+### 1. 문제 하나 고르기
 
-## Candidate contract
+아쉬운 출력과 한 줄의 의견에서 시작한다. 관련 스킬과 필요한 참조만 읽고, 바꿀 행동 하나와 유지할 장점을 짧게 설명한다. 이미 있는 규칙은 적용 누락이나 충돌부터 확인한다. 완료된 과거 피드백을 현재 실패로 간주하지 않는다.
 
-State one falsifiable hypothesis that links external evidence and a local observation, changes exactly one instruction bundle or reference-selection strategy, names primary and protected measures, and gives a rejection rule. Work only in an isolated experiment candidate until promotion is explicitly approved.
+출력 사례가 없으면 가능한 환경에서 대표 요청으로 확인한다. 실행할 수 없다면 지침에서 확인한 문제와 아직 검증하지 못한 추정을 구분한다. 사용 절차의 모순이나 불필요한 요구는 문서 비교로 수정할 수 있지만, 글 품질 향상은 실제 출력 없이 단정하지 않는다. 문제가 확인되지 않으면 규칙을 억지로 추가하지 않는다.
 
-Use `scripts/loop.py` as the local entry point. Preserve failed candidates and their evidence; never turn an error, timeout, blank output, missing artifact, or split leak into a pass.
+### 2. 작게 고쳐 비교하기
+
+한 번에 한 가지 행동을 바꾸는 수정안을 만든다. 출력에 영향을 주는 변경은 원본을 보존한 별도 후보로 비교한다. 기본 비교는 문제가 드러난 요청, 새 주제의 요청, 잘하던 능력을 확인할 요청 각 하나로 시작한다. 같은 모델·설정·입력·맥락을 사용하되 수정 전후는 별도 대화에서 실행한다.
+
+이번 문제에 맞는 쉬운 기준을 쓴다. 예: 덜 반복하는가, 필요한 설명이 남았는가, 요청과 의미·사실을 지켰는가. 바뀐 부분을 나란히 보여주고 전체 출력도 보관한다. 설명 누락이나 새 사실 오류가 생기면 채택하지 않는다. 차이가 불분명하면 기존 버전을 유지한다. 공통 코어를 바꿀 때만 그 규칙을 공유하는 스킬의 대표 사례까지 확인한다.
+
+실행 실패나 가상 예시는 비교 결과가 아니다. 실행할 수 없으면 수정안을 제시하고 미검증 상태를 명시한다. 절차·문서 수정은 관련 지침의 전후 내용, 참조 연결, 기존 기능과의 충돌을 확인한다.
+
+### 3. 좋아진 변경만 반영하기
+
+사용자 승인은 요청에 포함된 범위에 적용한다. 반영까지 요청받았다면 계속 적용하고, 계획·검토 요청은 제안으로 마친다. 기존 승인을 다시 요구하지 않으며, 저장소 수정 권한을 설치본 교체나 외부 배포 권한으로 확대하지 않는다.
+
+변경 전 내용이나 패치, 비교에 사용한 입력·조건·전체 출력, 판단을 하나의 Markdown 기록에 남긴다. 문서 수정은 출력 대신 지침의 전후 차이와 확인 내용을 기록한다. 기존 사용자 변경은 보존한다. 효과가 없었던 후보도 이유를 남긴다.
+
+사용자에게는 **문제 / 변경 / 비교 / 판단**을 쉬운 말로 보고한다. 실제 확인한 내용과 남은 불확실성을 구분하고 소규모 비교를 일반적인 성능 향상으로 표현하지 않는다.
+
+## 필요할 때만
+
+- **외부 조사:** 현재 자료로 판단이 막히거나 사용자가 프롬프트를 요청하면 [Deep Research 프롬프트 지침](references/deep-research-prompt.md)을 읽는다. 기본은 복사 가능한 한국어 프롬프트이며 조사 실행과는 별개다.
+- **기존 실험·CLI:** 사용자가 CLI 모드나 정식 실험을 명시하거나 기존 실험을 이어갈 때만 [기존 실험 절차](references/advanced-workflow.md)를 읽는다. 해당 실험의 평가·반영 조건을 기본 흐름으로 우회하지 않는다.
+
+기본 작업에는 CLI 실행, 외부 조사, JSONL 조사 카드, 점수 파일을 요구하지 않는다. 모드 선택이나 기술적인 파일 관리를 사용자에게 떠넘기지 않는다.
+
+## 파일 변경 위치
+
+`family.yaml`, `chaesajang-core/`, 각 스킬 폴더가 원본이다. `skills/`, `dist/`, `*.skill`은 생성물이므로 직접 고치지 않고 해당 동기화·렌더링 도구로 갱신한다. `feedback/completed/`와 `evals/golden/`의 기존 증거는 덮어쓰지 않는다.

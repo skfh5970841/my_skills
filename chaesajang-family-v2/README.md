@@ -2,19 +2,31 @@
 
 2번(코어 통합)·5번(핸드오프) 과제의 최종 산출물. 1번 과제(자아 코어)의 Step 0도 SKILL.md 수정본에 이미 반영되어 있어, 이 배포 한 번으로 두 과제가 함께 적용된다.
 
+## 스킬 개선하기
+
+`chaesajang-family-optimizer`에 아쉬운 출력과 한 줄의 의견을 주면 된다. 기본 흐름은 **문제 하나 고르기 → 작게 고쳐 비교하기 → 좋아진 변경만 반영하기**다. 모드 선택이나 명령어 입력은 필요하지 않다.
+
+예: “결론 뒤에 같은 설명이 반복돼. 관련 지침을 작게 고치고 전후 결과를 비교해 반영해줘.” 에이전트가 바뀐 부분과 유지된 장점을 보여주고, 검증하지 못한 점은 구분해 보고한다. 이미 반영을 요청한 범위는 재승인 없이 진행한다. 계획만 요청하면 제안으로 마친다.
+
+Deep Research는 판단이 막힐 때만 사용한다. “이 문제를 조사할 프롬프트를 만들어줘”라고 요청하면 [프롬프트 지침](chaesajang-family-optimizer/references/deep-research-prompt.md)에 따라 복사 가능한 한국어 프롬프트를 만든다. 외부 조사 실행은 별개다.
+
 ## 옵티마이저 소유권과 안전 경계
 
 - `family.yaml`, `chaesajang-core/`, 각 스킬 폴더가 canonical source다. 직접 수정은 승인된 변경에만 허용한다.
 - `skills/`, `dist/`, `*.skill`은 생성물이다. 직접 편집하지 말고 `sync_core.py`와 renderer로 다시 만든다.
 - `feedback/completed/` 원문과 `evals/golden/` 이관본은 immutable evidence다. 새 정보는 새 기록으로 추가하며 기존 기록을 덮어쓰지 않는다.
-- 후보, raw generation, 점수, blind package, rating, report는 해당 `experiments/<id>/`가 소유한다. `ready_for_approval`은 쓰기 권한이 아니며, `promote --approved-by-user`만 canonical source를 변경할 수 있다.
+- 기본 개선은 변경 전 내용·전후 비교·판단을 하나의 Markdown 기록에 남기고 승인된 범위에서 원본에 적용한다.
+- 아래 정식 CLI 실험의 후보, raw generation, 점수, blind package, rating, report는 해당 `experiments/<id>/`가 소유한다. 이 경로에서는 `ready_for_approval`이 쓰기 권한이 아니며, `promote --approved-by-user`만 canonical source를 변경할 수 있다. 기존 실험의 반영 조건을 기본 흐름으로 우회하지 않는다.
 
-## 최소 CLI
+## 선택 사항: 기존 실험 CLI
+
+정식 실험이나 기존 실험 재개를 요청한 경우에만 [기존 실험 절차](chaesajang-family-optimizer/references/advanced-workflow.md)를 사용한다. 아래 평가 파일과 상태 규칙은 이 경로에만 적용한다.
 
 저장소 루트에서 다음 형식을 사용한다. 현재 `bootstrap`은 설정 요약을 검증·출력하고, `cycle`과 `resume`은 저장된 manifest의 다음 행동을 출력하며, `report`는 기록된 보고서만 읽는다. 이 세 명령은 live model을 호출하거나 canonical source를 쓰지 않는다.
 
 ```powershell
 python chaesajang-family-v2/chaesajang-family-optimizer/scripts/loop.py --root chaesajang-family-v2 bootstrap --experiment <id> --model <model> --reasoning <effort>
+python chaesajang-family-v2/chaesajang-family-optimizer/scripts/loop.py --root chaesajang-family-v2 research-prompt --target <skill-or-core-area> --problem <observed-problem> --local-evidence <relative-path> --scope delta --since <YYYY-MM-DD> --checked-at <YYYY-MM-DD>
 python chaesajang-family-v2/chaesajang-family-optimizer/scripts/loop.py --root chaesajang-family-v2 cycle --experiment <id> --claims <research.jsonl> --hypothesis <hypothesis.md> --cases <cases.jsonl> --ratings <human_ratings.jsonl> --timeout 180
 python chaesajang-family-v2/chaesajang-family-optimizer/scripts/loop.py --root chaesajang-family-v2 resume --experiment <id> --timeout 180
 python chaesajang-family-v2/chaesajang-family-optimizer/scripts/loop.py --root chaesajang-family-v2 report --experiment <id>
@@ -27,7 +39,7 @@ python chaesajang-family-v2/chaesajang-family-optimizer/scripts/loop.py --root c
 
 `human_ratings.jsonl`은 blind pair마다 한 줄의 JSON object를 기록한다. 필드는 `pair_id`, `quality_preference`, `style_preference`, `overall_preference`, `over_imitation`, `meaning_or_fact_issue` (`A`/`B` 각각), `evidence_excerpt`다. 공개 pair의 `A`/`B`만 평가하고 private mapping은 rating 파일에 복사하지 않는다.
 
-명령 비정상 종료, CLI 부재, timeout, 빈 출력, malformed output은 `blocked_external`이며 PASS나 0점이 아니다. provenance·hash·필수 artifact가 불완전하면 `invalid`, gate 또는 보호 사례가 실패하면 `rejected`다. deterministic tests 자체는 live Codex를 호출하지 않는다. 별도로 승인해 실제 Codex generation을 실행하면 모델 사용 비용과 latency가 발생할 수 있다.
+`research-prompt`는 외부 도구를 실행하거나 파일을 쓰지 않고, 붙여넣어 사용할 조사 프롬프트만 표준 출력으로 만든다. 명령 비정상 종료, CLI 부재, timeout, 빈 출력, malformed output은 `blocked_external`이며 PASS나 0점이 아니다. provenance·hash·필수 artifact가 불완전하면 `invalid`, gate 또는 보호 사례가 실패하면 `rejected`다. deterministic tests 자체는 live Codex를 호출하지 않는다. 별도로 승인해 실제 Codex generation을 실행하면 모델 사용 비용과 latency가 발생할 수 있다.
 
 ## 산출물 구성
 
