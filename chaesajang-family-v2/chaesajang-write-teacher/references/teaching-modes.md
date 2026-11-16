@@ -1,44 +1,44 @@
-# Teaching Modes
+# 지도 모드
 
-Modes help choose the next intervention. They are not fixed scripts.
+모드는 다음 개입을 고르는 데 쓴다. 고정된 대본이 아니다.
 
-## Training-Start Mode
+## 훈련 시작 모드
 
-Use when the user asks "글쓰기 훈련 시작", "글쓰기 훈련", "글쓰기 선생님", or "글쓰기 튜터" without a draft.
+사용자가 초고 없이 "글쓰기 훈련 시작", "글쓰기 훈련", "글쓰기 선생님", "글쓰기 튜터"를 요청할 때 쓴다.
 
-Ask at most three intake questions:
+접수 질문은 최대 세 개다.
 
-- What topic or field are you drawn to?
-- What kind of writing do you want to improve: essay, explanation, column, lecture script, or personal reflection?
-- How comfortable are you right now: beginner, intermediate, or advanced?
+- 어떤 주제나 분야에 끌리는가
+- 어떤 글을 더 잘 쓰고 싶은가: 에세이, 설명글, 칼럼, 강연 원고, 개인적 성찰
+- 지금 얼마나 익숙한가: 입문, 중급, 숙련
 
-Then give one small assignment. Do not give a full curriculum unless asked.
+그다음 작은 과제 하나를 준다. 요청이 없으면 전체 커리큘럼을 내놓지 않는다.
 
-## Diagnosis/Revision Mode
+## 진단·퇴고 모드
 
-Use when the user submits writing.
+사용자가 글을 제출했을 때 쓴다.
 
-Recommended response shape:
+권장 응답 형태:
 
-1. One-sentence diagnosis.
-2. One resource in the draft worth preserving.
-3. Main bottleneck in the reader's perception shift.
-4. Overall 10-point score with brief reason.
-5. One focused assignment.
-6. Resubmission criterion.
+1. 한 문장 진단
+2. 초고에서 살릴 자원 하나
+3. 독자의 인식 이동을 막는 가장 큰 병목
+4. 10점 만점 종합 점수와 짧은 이유
+5. 초점이 분명한 과제 하나
+6. 재제출 기준
 
-Skip or compress parts when the user asks for quick feedback.
+사용자가 빠른 피드백을 원하면 일부를 생략하거나 줄인다.
 
-## Resubmission Mode
+## 재제출 모드
 
-Use when the user returns after an assignment.
+사용자가 과제를 하고 돌아왔을 때 쓴다.
 
-First check whether the assignment was fulfilled. Do not introduce many new problems. Keep the training ladder narrow:
+먼저 과제가 수행됐는지 본다. 새 문제를 여러 개 꺼내지 않는다. 훈련의 사다리를 좁게 유지한다.
 
-- If the assignment improved, name the improvement and raise one next challenge.
-- If it did not improve, restate the same task with a smaller target.
-- If the user solved a different but valuable problem, acknowledge it and redirect gently.
+- 나아졌다면 무엇이 나아졌는지 짚고, 다음 과제 하나를 올린다
+- 나아지지 않았다면 같은 과제를 더 작은 목표로 다시 준다
+- 다른 문제를 풀어왔는데 그것이 값지다면, 인정하고 부드럽게 원래 과제로 돌린다
 
-## Co-Writing Mode
+## 같이 쓰기 모드
 
-Use `co-writing-flow.md` when the user wants to write from the beginning together.
+사용자가 처음부터 함께 쓰고 싶어 할 때 `co-writing-flow.md`를 쓴다.

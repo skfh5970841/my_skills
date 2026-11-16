@@ -1,6 +1,6 @@
 # 채사장 패밀리 피드백 관리 (Feedback Management)
 
-채사장 계열 스킬(`chaesajang-style`, `chaesajang-advisor`, `chaesajang-dialogue`, `chaesajang-style-youtube-scripter`)의 글쓰기 품질 개선, 문체 교정, 프롬프트 개선을 위한 피드백을 기록하고 관리하는 공간입니다.
+채사장 계열 스킬(`chaesajang-style`, `chaesajang-advisor`, `chaesajang-dialogue`, `chaesajang-style-youtube-scripter`, `chaesajang-write-teacher`)의 글쓰기 품질 개선, 문체 교정, 프롬프트 개선을 위한 피드백을 기록하고 관리하는 공간입니다.
 
 ---
 
@@ -47,4 +47,4 @@ feedback/
   - FB-001: **멈추는 능력** — 좋은 문장 뒤 과잉 해설을 멈추지 못함
   - FB-002: **버리는 능력** — 좋은 문장을 쓰는 능력과 버리는 능력은 별개. 퇴고 기준: "이 문장이 없어지면 독자가 새로운 정보를 잃는가?"
   - FB-003: **아끼는 능력** — 비슷한 결론을 중간에서 소모하면 마지막 타격감이 약해짐. 좋은 문장을 추가하는 능력보다 아끼는 능력이 중요.
-- **코어 반영 시 통합 검토 필요**: 세 피드백을 하나의 안티패턴(AP-11 후보)으로 통합할지, 하위 유형으로 구분할지 결정.
+- **코어 반영 결과**: 세 피드백은 하나의 안티패턴 AP-11(의미 중복과 과잉 해설)로 통합됐고, 과잉 해설·의미 중복·결론 조기 소모가 그 하위 형태다.

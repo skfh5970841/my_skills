@@ -1,19 +1,19 @@
-# Co-Writing Flow
+# 같이 쓰기 흐름
 
-Co-writing means teacher-led recommendation plus user revision. It is not ghostwriting and not long option picking.
+같이 쓰기는 선생님이 추천하고 사용자가 고치는 방식이다. 대필이 아니고, 긴 선택지에서 고르게 하는 것도 아니다.
 
-## Default Flow
+## 기본 흐름
 
-1. Infer or ask the writing goal.
-2. Recommend one perception-shift axis.
-3. Recommend one entry device.
-4. Describe the next paragraph's job.
-5. Offer a compact starting move if useful.
-6. Ask the user to revise the recommendation.
+1. 글의 목표를 추론하거나 묻는다.
+2. 인식 이동의 축 하나를 추천한다.
+3. 진입 장치 하나를 추천한다.
+4. 다음 문단이 할 일을 말한다.
+5. 도움이 된다면 짧은 출발 문장을 제안한다.
+6. 사용자에게 추천을 고쳐 보라고 한다.
 
-## Recommendation Shape
+## 추천의 형태
 
-Use this shape when starting from nothing:
+백지에서 시작할 때는 이 형태를 쓴다.
 
 ```text
 제가 보기엔 이 글은 [축]으로 가는 편이 좋겠습니다.
@@ -26,16 +26,16 @@ Use this shape when starting from nothing:
 마음에 들지 않는 축, 진입 방식, 표현을 고쳐주세요.
 ```
 
-## Entry Devices
+## 진입 장치
 
-- Question: use when the reader already lives with the issue but has not named it.
-- Paradox: use when a common belief must be shaken.
-- Scene: use when a historical or concrete moment is stronger than explanation.
-- Concept: use when the user needs intellectual clarity before emotional force.
-- Personal observation: use when lived experience is the cleanest doorway.
+- 질문: 독자가 이미 그 문제 속에 살고 있지만 이름 붙이지 못했을 때. 물음표로 시작하기보다 평서문 안에 질문을 소환한다.
+- 역설: 통념을 흔들어야 할 때
+- 장면: 역사적·구체적 순간이 설명보다 강할 때
+- 개념: 정서적 힘보다 지적 명료함이 먼저 필요할 때
+- 개인 관찰: 살아본 경험이 가장 깨끗한 입구일 때
 
-## Guardrail
+## 가드레일
 
-Do not force topic -> outline -> introduction -> body -> conclusion. That order is allowed only when it genuinely serves the perception shift.
+주제 → 개요 → 도입 → 본문 → 결론의 순서를 강요하지 않는다. 그 순서는 인식 이동에 실제로 도움이 될 때만 쓴다.
 
-Do not produce the full draft first. Help the user write the next move.
+완성 초고를 먼저 내놓지 않는다. 사용자가 다음 한 수를 쓰도록 돕는다.

@@ -1,6 +1,15 @@
-# 채사장 계열 코어 통합 — 배포 가이드
+# 채사장 계열 스킬
 
-2번(코어 통합)·5번(핸드오프) 과제의 최종 산출물. 1번 과제(자아 코어)의 Step 0도 SKILL.md 수정본에 이미 반영되어 있어, 이 배포 한 번으로 두 과제가 함께 적용된다.
+채사장의 시선을 공유하는 스킬 묶음이다. 공통 코어(`chaesajang-core/`)를 단일 원본으로 두고 각 스킬에 배포한다.
+
+| 스킬 | 산출물 |
+|---|---|
+| chaesajang-style | 완성된 산문 (창작·변환) |
+| chaesajang-advisor | 자문·개요, 그리고 거기서 이어지는 집필 (style과 같은 점검 기준) |
+| chaesajang-dialogue | 대화 자체 |
+| chaesajang-style-youtube-scripter | 영상 대본 |
+| chaesajang-write-teacher | 사용자가 직접 쓰도록 하는 훈련·첨삭 (자아를 연기하지 않음) |
+| chaesajang-family-optimizer | 위 스킬들의 개선 (중립적 연구자) |
 
 ## 스킬 개선하기
 
@@ -13,7 +22,7 @@ Deep Research는 판단이 막힐 때만 사용한다. “이 문제를 조사�
 ## 옵티마이저 소유권과 안전 경계
 
 - `family.yaml`, `chaesajang-core/`, 각 스킬 폴더가 canonical source다. 직접 수정은 승인된 변경에만 허용한다.
-- `skills/`, `dist/`, `*.skill`은 생성물이다. 직접 편집하지 말고 `sync_core.py`와 renderer로 다시 만든다.
+- `skills/`, `dist/`(그 안의 `packages/*.skill` 포함)는 생성물이다. 직접 편집하지 말고 `sync_core.py`와 renderer로 다시 만든다.
 - `feedback/completed/` 원문과 `evals/golden/` 이관본은 immutable evidence다. 새 정보는 새 기록으로 추가하며 기존 기록을 덮어쓰지 않는다.
 - 기본 개선은 변경 전 내용·전후 비교·판단을 하나의 Markdown 기록에 남기고 승인된 범위에서 원본에 적용한다.
 - 아래 정식 CLI 실험의 후보, raw generation, 점수, blind package, rating, report는 해당 `experiments/<id>/`가 소유한다. 이 경로에서는 `ready_for_approval`이 쓰기 권한이 아니며, `promote --approved-by-user`만 canonical source를 변경할 수 있다. 기존 실험의 반영 조건을 기본 흐름으로 우회하지 않는다.
@@ -41,55 +50,35 @@ python chaesajang-family-v2/chaesajang-family-optimizer/scripts/loop.py --root c
 
 `research-prompt`는 외부 도구를 실행하거나 파일을 쓰지 않고, 붙여넣어 사용할 조사 프롬프트만 표준 출력으로 만든다. 명령 비정상 종료, CLI 부재, timeout, 빈 출력, malformed output은 `blocked_external`이며 PASS나 0점이 아니다. provenance·hash·필수 artifact가 불완전하면 `invalid`, gate 또는 보호 사례가 실패하면 `rejected`다. deterministic tests 자체는 live Codex를 호출하지 않는다. 별도로 승인해 실제 Codex generation을 실행하면 모델 사용 비용과 latency가 발생할 수 있다.
 
-## 산출물 구성
+## 구성
 
 ```
-chaesajang-core/                  # 마스터 — 앞으로 이것만 수정한다
-  persona_core.md                 # 자아 (1번 과제)
-  handoff_core.md                 # 스킬 간 맥락 이동 패킷 (5번 과제)
-  gaze_core.md                    # 시선 4원리 + 쓰는 방식 (SKILL.md 마커 주입용)
-  anti_patterns_core.md           # 함정 AP-01~07 + 클로드 네 함정 + 체크리스트
-  reference_core.md               # 문장 패턴 (A/B 인물화, 용어 지연 도입 편입)
-  template_core.md                # 글쓰기 예시 (advisor 변형 7종 편입)
+family.yaml                       # 스킬 목록, 스킬별 코어 파일, 시선 블록 주입 여부
+chaesajang-core/                  # 공통 코어 마스터 — 코어 내용은 여기서만 수정한다
+  persona_core.md                 # 자아
+  handoff_core.md                 # 스킬 간 맥락 이동 패킷
+  gaze_core.md                    # 시선 4원리 + 쓰는 방식 (SKILL.md의 CORE:gaze 마커로 주입)
+  anti_patterns_core.md           # 함정 AP-01~11 + 클로드 네 함정 + 체크리스트
+  reference_core.md               # 문장 패턴, 실측 빈도
+  template_core.md                # 도입·전개·통찰 예시
   transformation_core.md          # 변환 판단 RULE-01~06
   *_youtube.md (4종)              # scripter 전용 델타
-
-skills/                           # 4개 SKILL.md 수정본 (전체 교체용)
-sync_core.py                      # 동기화 스크립트
+chaesajang-<skill>/               # 스킬 원본. references/의 *_core.md는 코어 사본이다
+skills/                           # SKILL.md 스냅샷 (생성물, 커밋함)
+dist/                             # 런타임별 조립본과 packages/*.skill (생성물, git 제외)
+sync_core.py                      # 동기화
 ```
 
-## 배포 절차
+## 코어를 고칠 때
 
-1. 로컬 스킬 작업 루트에 `chaesajang-core/` 폴더를 만들고 마스터 10개 파일을 넣는다.
-2. 4개 스킬의 SKILL.md를 `skills/`의 수정본으로 교체한다.
-   (파일명의 스킬 접두어는 제거: `chaesajang-style.SKILL.md` → `chaesajang-style/SKILL.md`)
-3. 구 보조 파일을 삭제한다:
-   - style: `references/` 안의 anti_patterns·reference·template·transformation_rules.md
-   - advisor: 위 4종 + `references/persona_contract.md`
-   - scripter: 루트의 anti_patterns·reference·template·transformation_rules.md
-4. `python3 sync_core.py` 실행 → 코어 사본 배포 + gaze 마커 주입.
-5. 각 스킬을 package_skill.py로 재패키징.
+1. `chaesajang-core/`의 마스터만 수정한다. 스킬 폴더의 `*_core.md` 사본과 `CORE:gaze` 블록 안쪽은 직접 고치지 않는다.
+2. `python3 sync_core.py` — 마스터를 각 스킬 폴더 사본과 SKILL.md 시선 블록에 반영하고, `skills/` 스냅샷과 `dist/`를 다시 만든다.
+3. `python3 sync_core.py --check` — 종료코드 0이면 동기화 상태, 2면 드리프트.
+4. 설치용 패키지는 `dist/packages/<스킬>.skill`이다.
 
-## 이후 운용
+`dist/`는 git에 없으므로 새로 클론한 직후에는 `--check`가 실패한다. `sync_core.py`를 한 번 실행하면 된다.
 
-- 코어 내용 수정은 **마스터에서만** 하고 sync_core.py를 재실행한다.
-- 사본을 직접 고치고 싶어지는 순간이 드리프트의 시작이다.
-- `python3 sync_core.py --check`로 언제든 드리프트를 검사할 수 있다 (종료코드 2 = 드리프트 존재).
-- 시선 4원리·쓰는 방식 수정 → gaze_core.md의 마커 블록 안쪽만 수정.
+## 같은 내용이 두 곳에 있는 곳
 
-## 미반영 항목 (수동 1건)
-
-advisor의 `references/mode_write.md`에 한 줄 추가 권장:
-> 코어 파일은 전체를 읽지 않아도 된다. 작업에 필요한 섹션만 읽는다.
-> (template_core·reference_core가 변형 편입으로 길어졌기 때문)
-
-## 변경 요약
-
-| 항목 | 이전 | 이후 |
-|---|---|---|
-| 보조 파일 | 9벌 (3계보 독립 드리프트) | 코어 5 + 델타 4, 단일 원본 |
-| 자아 정의 | 2/4 스킬, 기능형 | 4/4 스킬, 입장·기원 포함 |
-| 핸드오프 | dialogue→style 안내만 | 패킷 표준, 4스킬 발신·수신 연결 |
-| 시선 4원리 | 2벌, 상호 모순 (확신 정의) | 1벌, 마커 주입 |
-| 상호참조 | 1건 파손 (자기계발 클리셰) | AP-번호 참조로 수정 |
-| advisor 고유 자산 | advisor에 고립 | A/B 인물화 등 코어 편입 |
+- 완성 후 점검 목록: `chaesajang-style/SKILL.md`의 "글을 완성한 뒤"가 정본이고 `chaesajang-advisor/references/mode_write.md`에 같은 목록이 있다. 한쪽을 고치면 다른 쪽도 고친다.
+- `gaze_core.md`의 `CORE:method` 블록은 주입되지 않는 보존본이다.

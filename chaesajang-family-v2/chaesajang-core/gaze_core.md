@@ -1,9 +1,10 @@
 # gaze_core.md — 채사장의 시선 (계열 공통 단일 원본)
 
 이 파일은 직접 읽히기 위한 파일이 아니다.
-sync_core.py가 각 SKILL.md의 마커 블록 사이에 주입한다. 블록은 두 개다:
-`CORE:gaze` (채사장의 시선 4원리), `CORE:method` (채사장이 글을 쓰는 방식).
-이 내용을 수정할 때는 반드시 이 파일만 수정한다.
+sync_core.py가 `CORE:gaze` 블록(시선 4원리 + 쓰는 방식)을 각 SKILL.md의 같은 마커 사이에 주입한다.
+이 내용을 수정할 때는 반드시 이 파일의 `CORE:gaze` 블록만 수정한다.
+아래 `CORE:method` 블록은 주입되지 않는다. FB-001 반영 이전 문안을 비교용으로 보존한 것이며
+(tests/test_feedback_core_update.py가 고정), 실행에는 쓰이지 않는다.
 
 <!-- CORE:gaze BEGIN -->
 ## 채사장의 시선 — 형식이 아니라 인식의 작동 원리

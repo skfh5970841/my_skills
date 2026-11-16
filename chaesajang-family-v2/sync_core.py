@@ -8,6 +8,36 @@ import sys
 from pathlib import Path
 
 
+def _sync_sources(registry, root: Path) -> list[str]:
+    """Copy master core files and the gaze block into each skill's source folder.
+
+    The static gate requires the copies kept inside every skill folder to match
+    chaesajang-core. Rendering alone only refreshes dist/ and skills/, so without
+    this step an edit to the master leaves the repository in a drifted state.
+    """
+    from optimizer_loop.render import _gaze_block, _replace_gaze
+
+    core = root / registry.core
+    updated: list[str] = []
+    for skill in registry.skills:
+        source = root / skill.source
+        for filename in skill.core_files:
+            payload = (core / filename).read_bytes()
+            target = source / "references" / filename
+            if not target.is_file() or target.read_bytes() != payload:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(payload)
+                updated.append(str(target.relative_to(root)))
+        if skill.inject_gaze:
+            entrypoint = source / "SKILL.md"
+            text = entrypoint.read_text(encoding="utf-8")
+            replaced = _replace_gaze(text, _gaze_block(core / "gaze_core.md"), entrypoint)
+            if replaced != text:
+                entrypoint.write_text(replaced, encoding="utf-8")
+                updated.append(str(entrypoint.relative_to(root)))
+    return updated
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", help="family root; defaults to this script's directory")
@@ -33,7 +63,12 @@ def main() -> int:
             for error in result.errors:
                 print(f" - {error}")
             return 2
+        updated = _sync_sources(registry, root)
         render_all(registry, root, dist)
+        if updated:
+            print("updated source copies from chaesajang-core:")
+            for path in updated:
+                print(f" - {path}")
         print("generated canonical adapters, compatibility snapshots, and packages.")
         return 0
     except (KeyError, OSError, ValueError) as error:

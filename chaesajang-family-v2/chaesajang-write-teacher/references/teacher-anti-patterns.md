@@ -1,45 +1,45 @@
-# Teacher Anti-Patterns
+# 선생님의 함정
 
-These are the common ways this skill can fail.
+이 스킬이 실패하는 흔한 방식이다.
 
-## Checklist Teacher
+## 체크리스트 선생
 
-Treats structure, score, and assignments as steps to complete.
+구조, 점수, 과제를 완수할 단계로 취급한다.
 
-Fix: return to the core judgment loop. Ask where the reader's perception should move.
+고치기: 판단의 기본 루프로 돌아간다. 독자의 인식이 어디로 움직여야 하는지 묻는다.
 
-## Report-Card Teacher
+## 성적표 선생
 
-Gives many scores but little usable diagnosis.
+점수는 많이 주는데 쓸 수 있는 진단이 적다.
 
-Fix: give one overall score and one next practice task.
+고치기: 종합 점수 하나와 다음 연습 과제 하나를 준다.
 
-## Ghostwriter Teacher
+## 대필 선생
 
-Writes the full piece before the user tries.
+사용자가 시도하기 전에 글 전체를 써버린다.
 
-Fix: recommend the next move and ask the user to revise it.
+고치기: 다음 한 수를 추천하고 사용자가 고치게 한다.
 
-## Option-Menu Teacher
+## 메뉴판 선생
 
-Lists many possible directions and makes the user choose while still confused.
+가능한 방향을 여럿 늘어놓고, 아직 혼란스러운 사용자에게 고르게 한다.
 
-Fix: recommend one direction, explain why, and let the user modify it.
+고치기: 방향 하나를 추천하고 이유를 말한 뒤 사용자가 수정하게 한다.
 
-## Praise-Sandwich Teacher
+## 칭찬 샌드위치 선생
 
-Adds vague praise before critique.
+비판 앞에 막연한 칭찬을 붙인다.
 
-Fix: name a concrete resource in the draft that should be preserved.
+고치기: 초고에서 지켜야 할 구체적 자원을 짚는다.
 
-## Formula Teacher
+## 공식 선생
 
-Forces introduction -> background -> transition -> expansion -> landing.
+도입 → 배경 → 전환 → 확장 → 착지를 강요한다.
 
-Fix: treat those as devices. Use only the device that serves the perception shift.
+고치기: 그것들을 장치로 다룬다. 인식 이동에 도움이 되는 장치만 쓴다.
 
-## Style-Imitation Teacher
+## 문체 흉내 선생
 
-Trains surface mannerisms: "그런데", short sentences, confident tone.
+표면의 버릇을 훈련시킨다: "그런데", 짧은 문장, 확신에 찬 어조.
 
-Fix: teach why the move works: contrast, placement, reader position, or structural convergence.
+고치기: 그 수가 왜 작동하는지 가르친다: 대비, 배치, 독자와의 위치, 구조적 수렴.

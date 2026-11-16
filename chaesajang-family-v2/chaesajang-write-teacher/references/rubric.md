@@ -1,29 +1,30 @@
-# 10-Point Diagnostic Rubric
+# 10점 진단 루브릭
 
-The score is a diagnostic instrument, not a report card. Use it to identify the next practice task.
+점수는 성적표가 아니라 진단 도구다. 다음 연습 과제를 찾는 데 쓴다.
 
-## Overall Score
+## 종합 점수
 
-Give one overall score out of 10 by default. Add item scores only if the user asks for detailed grading.
+기본은 10점 만점 종합 점수 하나다. 항목별 점수는 사용자가 상세 채점을 요청할 때만 덧붙인다.
 
-| Score | Meaning |
+| 점수 | 의미 |
 |---|---|
-| 1-3 | The topic exists, but the reader's perception does not move yet. |
-| 4-5 | There is a direction, but the axis or sequence is unclear. |
-| 6-7 | The writing works in parts, but one bottleneck weakens the whole. |
-| 8-9 | Strong structure and voice; refine rhythm, landing, or precision. |
-| 10 | Rare. The perception shift is clear, earned, and memorable. |
+| 1-3 | 주제는 있지만 독자의 인식이 아직 움직이지 않는다 |
+| 4-5 | 방향은 있으나 축이나 순서가 흐리다 |
+| 6-7 | 부분적으로 작동하지만 병목 하나가 전체를 약하게 만든다 |
+| 8-9 | 구조와 목소리가 단단하다. 리듬, 착지, 정밀함을 다듬을 단계 |
+| 10 | 드물다. 인식 이동이 분명하고, 과정에서 얻어졌고, 기억에 남는다 |
 
-## Diagnostic Lenses
+## 진단 렌즈
 
-- Perception shift: does the reader see something differently?
-- Central axis: is there a clear contrast, structure, or question holding the piece together?
-- Placement: are details arranged so the conclusion feels earned?
-- Connection: does the piece connect individual observation to a larger structure?
-- Rhythm: do short and long sentences create controlled tension and release?
-- Reader position: does the writer stand beside the reader instead of above them?
-- Landing: does the ending return to the reader's present with a changed view?
+- 인식 이동: 독자가 무언가를 다르게 보게 되는가
+- 중심 축: 글을 붙들고 있는 분명한 대비, 구조, 질문이 있는가
+- 배치: 결론이 얻어진 것으로 느껴지도록 재료가 놓였는가
+- 연결: 개별 관찰이 더 큰 구조와 이어지는가
+- 리듬: 짧은 문장과 긴 문장이 긴장과 이완을 조절하는가
+- 독자와의 위치: 글쓴이가 독자 위가 아니라 옆에 서 있는가
+- 착지: 결말이 달라진 시야와 함께 독자의 현재로 돌아오는가
+- 멈춤: 이미 전달된 것을 새 정보 없이 다시 설명하지 않는가
 
-## Scoring Discipline
+## 채점 규율
 
-Name the main bottleneck before the number. Never let the number replace diagnosis.
+숫자보다 먼저 가장 큰 병목을 말한다. 숫자가 진단을 대신하게 두지 않는다.

@@ -19,8 +19,8 @@ skills:
     inject_gaze: true
   - name: chaesajang-write-teacher
     source: chaesajang-write-teacher
-    core_files: []
-    inject_gaze: false
+    core_files: [handoff_core.md]
+    inject_gaze: true
 generated:
   compatibility_snapshots: skills
   dist: dist

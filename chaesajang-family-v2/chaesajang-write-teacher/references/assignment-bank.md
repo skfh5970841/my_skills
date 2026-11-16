@@ -1,31 +1,32 @@
-# Assignment Bank
+# 과제 은행
 
-Choose assignments by bottleneck, not by checklist.
+과제는 체크리스트가 아니라 병목에 따라 고른다.
 
-## Bottleneck -> Assignment
+## 병목 → 과제
 
-| Bottleneck | Assignment |
+| 병목 | 과제 |
 |---|---|
-| No reader question | Write one question the reader already carries but has not named. |
-| Weak central axis | Reduce the topic to one contrast or one structural question. |
-| Premature conclusion | Move the conclusion behind one concrete scene or structural explanation. |
-| Definition-heavy opening | Replace the first definition with a lived action, scene, or paradox. |
-| List-like development | Show the relation among items: cause, support, contrast, or repetition. |
-| Abstract explanation | Add one concrete example, then return to the concept. |
-| Emotional shortcut | Replace the emotional claim with the structure that produces that emotion. |
-| Teaching-down tone | Rewrite the sentence so writer and reader stand in the same place. |
-| Weak landing | Return to the opening question with a changed meaning. |
-| Flat rhythm | Add one short sentence before a longer explanatory sentence, or remove excess repetition. |
+| 독자의 질문이 없다 | 독자가 이미 품고 있지만 이름 붙이지 못한 질문 하나를 쓴다 |
+| 중심 축이 약하다 | 주제를 하나의 대비나 하나의 구조적 질문으로 줄인다 |
+| 결론이 너무 이르다 | 결론을 구체적 장면이나 구조 설명 하나 뒤로 옮긴다 |
+| 정의로 무겁게 시작한다 | 첫 정의를 살아 있는 행위, 장면, 역설로 바꾼다 |
+| 전개가 나열이다 | 항목 사이의 관계를 보여준다: 원인, 뒷받침, 대비, 반복 |
+| 설명이 추상적이다 | 구체적 예 하나를 넣고 개념으로 돌아온다 |
+| 감정으로 건너뛴다 | 감정적 주장을 그 감정을 만드는 구조로 바꾼다 |
+| 내려다보는 어조 | 글쓴이와 독자가 같은 자리에 서도록 문장을 다시 쓴다 |
+| 착지가 약하다 | 처음의 질문으로 돌아가되 의미가 달라져 있게 한다 |
+| 리듬이 평평하다 | 긴 설명 문장 앞에 짧은 문장 하나를 두거나, 넘치는 반복을 덜어낸다 |
+| 같은 말을 되풀이한다 | 지워도 독자가 새로 잃는 것이 없는 문장을 찾아 지운다 |
 
-## Assignment Size
+## 과제의 크기
 
-Use the smallest task that can create visible improvement:
+눈에 보이는 개선을 만들 수 있는 가장 작은 과제를 쓴다.
 
-- Sentence task for rhythm, tone, or thesis precision.
-- Paragraph task for entry, transition, or explanation.
-- Outline task for axis, placement, or whole-piece structure.
-- Full revision only when the bottleneck is distributed across the whole piece.
+- 문장 과제: 리듬, 어조, 논지의 정밀함
+- 문단 과제: 진입, 전환, 설명
+- 개요 과제: 축, 배치, 글 전체의 구조
+- 전면 퇴고: 병목이 글 전체에 퍼져 있을 때만
 
-## Rule
+## 규칙
 
-Give one main assignment by default. Add a bonus challenge only for advanced users or when the user asks for more.
+기본은 주 과제 하나다. 도전 과제는 숙련된 사용자이거나 사용자가 더 원할 때만 덧붙인다.

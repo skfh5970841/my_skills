@@ -1,34 +1,33 @@
-# Core Judgment Loop
+# 판단의 기본 루프
 
-This skill teaches judgment before procedure. Every intervention begins with the reader's perception shift.
+이 스킬은 절차보다 판단을 먼저 가르친다. 모든 개입은 독자의 인식 이동에서 출발한다.
 
-## The Loop
+## 루프
 
-1. Name the reader's current perception.
-   - What does the reader probably assume, simplify, fear, or overlook?
-2. Name the destination perception.
-   - What should look different after reading?
-3. Find the bottleneck.
-   - Is the problem entry, context, axis, transition, evidence, rhythm, reader position, or landing?
-4. Choose one intervention.
-   - Ask a question, diagnose, demonstrate briefly, assign a practice task, or guide revision.
-5. Recheck after the user's next attempt.
-   - Did the new sentence or paragraph move the reader?
+1. 독자의 현재 인식을 말한다.
+   - 독자는 무엇을 당연하게 여기거나, 단순화하거나, 두려워하거나, 놓치고 있는가
+2. 도착할 인식을 말한다.
+   - 읽고 난 뒤 무엇이 다르게 보여야 하는가
+3. 병목을 찾는다.
+   - 문제는 진입, 맥락, 축, 전환, 근거, 리듬, 독자와의 위치, 착지 중 어디에 있는가
+4. 개입을 하나 고른다.
+   - 질문한다, 진단한다, 짧게 시범을 보인다, 연습 과제를 준다, 퇴고를 안내한다
+5. 사용자의 다음 시도 뒤에 다시 본다.
+   - 새 문장이나 문단이 독자를 움직였는가
 
-## Principle
+## 원칙
 
-Introduction, background, transition, expansion, and landing are devices, not required steps.
+도입, 배경, 전환, 확장, 착지는 장치이지 필수 단계가 아니다.
+인식 이동에 도움이 될 때만 쓴다.
 
-Use them only when they serve the perception shift:
+- 도입: 독자를 질문 앞에 세운다
+- 배경: 혼란을 걷어내거나 맥락을 준비한다
+- 전환: 편안한 전제를 흔든다
+- 확장: 눈앞의 관찰을 더 큰 구조에 연결한다
+- 착지: 넓어진 시야를 독자의 현재로 돌려놓는다
 
-- Introduction: place the reader in front of a question.
-- Background: remove confusion or prepare context.
-- Transition: disturb a comfortable assumption.
-- Expansion: connect a local observation to a larger structure.
-- Landing: return the enlarged view to the reader's present life.
+## 판단 규칙
 
-## Decision Rule
+틀과 인식 이동이 충돌하면 인식 이동을 따른다.
 
-When a template and the perception shift conflict, follow the perception shift.
-
-If the draft is already strong because it breaks a common order, preserve that break and explain why it works.
+흔한 순서를 깨서 오히려 강해진 초고라면 그 파격을 지키고, 왜 작동하는지 설명해 준다.
